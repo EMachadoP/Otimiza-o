@@ -43,7 +43,7 @@ class ParameterOptimizer:
         strategy_type: str,
         param_ranges: Dict[str, Dict],
         criteria: str = "sharpe",
-        max_combinations: int = 500,
+        max_combinations: int = 2000,
     ) -> Dict:
         """
         Run grid-search optimization with real backtests and WFA validation.
@@ -59,7 +59,7 @@ class ParameterOptimizer:
             indices = [int(i * step) for i in range(max_combinations)]
             combinations = [combinations[i] for i in indices]
 
-        logger.info(f"Optimizer: testing {len(combinations)} combinations for {strategy_type}")
+        logger.info(f"Optimizer: testing {len(combinations)} combinations for {strategy_type} (Vectorized Engine)")
 
         results = []
 

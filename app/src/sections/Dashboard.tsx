@@ -89,6 +89,7 @@ export function Dashboard() {
       return [...filtered, optimizedStrategy];
     });
     setSelectedStrategy(optimizedStrategy);
+    setShowEAExporter(true); // Abrir exportação automaticamente
   };
 
   const regimeLabels: Record<string, string> = {
