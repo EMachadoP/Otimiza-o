@@ -389,8 +389,9 @@ export function Dashboard() {
                     </div>
                   </div>
                 ) : (
-                  <div className="text-center text-slate-500 py-4">
-                    Analisando regime...
+                  <div className="flex flex-col items-center justify-center gap-2 text-slate-500 py-4">
+                    <RefreshCw className="h-5 w-5 animate-spin text-blue-500" />
+                    <span className="text-sm">Analisando regime de mercado...</span>
                   </div>
                 )}
               </CardContent>

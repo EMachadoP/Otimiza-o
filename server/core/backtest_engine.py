@@ -180,11 +180,17 @@ class BacktestEngine:
     def run_wfa(self, df: pd.DataFrame, strategy_type: str, params: Dict, n_windows: int = 5) -> Dict:
         """Real Walk-Forward Analysis on historical data."""
         total = len(df)
-        window_size = total // n_windows
+        # Adaptive: reduce windows if data is short
+        effective_windows = n_windows
+        while effective_windows > 2 and total // effective_windows < 20:
+            effective_windows -= 1
+
+        window_size = total // effective_windows
         train_ratio = 0.7
         windows = []
+        oos_sharpes = []
 
-        for i in range(n_windows):
+        for i in range(effective_windows):
             start = i * window_size
             end = min(start + window_size, total)
             split = start + int((end - start) * train_ratio)
@@ -192,7 +198,7 @@ class BacktestEngine:
             train_df = df.iloc[start:split].copy()
             test_df = df.iloc[split:end].copy()
 
-            if len(train_df) < 30 or len(test_df) < 10:
+            if len(train_df) < 10 or len(test_df) < 5:
                 continue
 
             train_signals = self._generate_signals(train_df, strategy_type, params)
@@ -200,6 +206,13 @@ class BacktestEngine:
 
             train_ret = (train_df['close'].pct_change() * train_signals.shift(1)).sum()
             test_ret = (test_df['close'].pct_change() * test_signals.shift(1)).sum()
+
+            # Compute OOS Sharpe for this window
+            oos_returns = test_df['close'].pct_change() * test_signals.shift(1)
+            oos_returns = oos_returns.dropna()
+            if len(oos_returns) > 2:
+                oos_sharpe = float(oos_returns.mean() / (oos_returns.std() + 1e-10) * np.sqrt(252))
+                oos_sharpes.append(oos_sharpe)
 
             eff = test_ret / (train_ret + 1e-10) if train_ret > 0 else 0
 
@@ -221,11 +234,13 @@ class BacktestEngine:
         avg_eff = np.mean([w['efficiency'] for w in windows]) if windows else 0
         is_cagr = np.mean([w['trainReturn'] for w in windows]) if windows else 0
         oos_cagr = np.mean([w['testReturn'] for w in windows]) if windows else 0
+        avg_oos_sharpe = round(float(np.mean(oos_sharpes)), 2) if oos_sharpes else 0
 
         return {
             "efficiency": round(float(avg_eff), 2),
             "isCAGR": round(float(is_cagr), 1),
             "oosCAGR": round(float(oos_cagr), 1),
+            "oosSharpe": avg_oos_sharpe,
             "windows": windows,
         }
 
@@ -329,10 +344,22 @@ class BacktestEngine:
 
                 metrics = self._compute_metrics(equity_curve, signals)
 
-                # Quick WFA for efficiency
+                # Quick WFA for efficiency + real OOS Sharpe
                 wfa = self.run_wfa(df, config['type'], config['parameters'], n_windows=3)
                 metrics['wfe'] = wfa['efficiency']
-                metrics['sharpeOOS'] = round(wfa['oosCAGR'] / 10, 2) if wfa['oosCAGR'] > 0 else 0
+                metrics['sharpeOOS'] = wfa.get('oosSharpe', 0)
+
+                # Quick Monte Carlo for Max DD P95 (500 sims for speed)
+                strategy_returns_clean = strategy_returns.dropna()
+                if len(strategy_returns_clean) > 10:
+                    mc_dds = []
+                    for _ in range(500):
+                        sampled = np.random.choice(strategy_returns_clean.values, size=len(strategy_returns_clean), replace=True)
+                        cum = np.cumprod(1 + sampled) * 10000
+                        peak = np.maximum.accumulate(cum)
+                        dd = (peak - cum) / (peak + 1e-10)
+                        mc_dds.append(dd.max())
+                    metrics['maxDrawdownMC'] = round(float(np.percentile(mc_dds, 95)) * 100, 1)
 
                 results.append({
                     "id": config['id'],

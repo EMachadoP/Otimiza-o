@@ -24,18 +24,54 @@ class MLModels:
 
         try:
             returns = np.log(df['close'] / df['close'].shift(1)).dropna()
-            volatility = returns.rolling(window=20).std().dropna()
+
+            # Adaptive rolling window based on data length
+            vol_window = min(20, max(5, len(returns) // 5))
+            volatility = returns.rolling(window=vol_window).std().dropna()
 
             if len(volatility) < 5:
-                return {"type": "undefined", "confidence": 0, "indicators": default_indicators}
+                # Fallback: simple regime detection without HMM
+                avg_ret = returns.tail(20).mean()
+                vol = returns.tail(20).std()
+                regime_type = "range"
+                if avg_ret > vol * 0.5:
+                    regime_type = "trend_up"
+                elif avg_ret < -vol * 0.5:
+                    regime_type = "trend_down"
+                return {"type": regime_type, "confidence": 60, "indicators": default_indicators}
 
             features = np.column_stack([returns.iloc[-len(volatility):], volatility])
 
-            model = hmm.GaussianHMM(n_components=3, covariance_type="full", n_iter=100)
+            n_components = min(3, len(features) // 3)
+            if n_components < 2:
+                n_components = 2
+
+            model = hmm.GaussianHMM(n_components=n_components, covariance_type="diag", n_iter=100, random_state=42)
             model.fit(features)
 
-            curr_regime = model.predict(features[-1:])[0]
-            regime_map = {0: "range", 1: "trend_up", 2: "trend_down"}
+            states = model.predict(features)
+            curr_regime = states[-1]
+
+            # Map states based on actual return means (not arbitrary indices)
+            state_means = {}
+            for s in range(n_components):
+                mask = states == s
+                if mask.any():
+                    state_means[s] = float(returns.iloc[-len(volatility):][mask].mean())
+                else:
+                    state_means[s] = 0
+
+            sorted_states = sorted(state_means.items(), key=lambda x: x[1])
+            regime_map = {}
+            if n_components >= 3:
+                regime_map[sorted_states[0][0]] = "trend_down"
+                regime_map[sorted_states[1][0]] = "range"
+                regime_map[sorted_states[2][0]] = "trend_up"
+            else:
+                regime_map[sorted_states[0][0]] = "trend_down"
+                regime_map[sorted_states[1][0]] = "trend_up"
+
+            regime_type = regime_map.get(curr_regime, "range")
 
             # Compute real ADX (simplified)
             high = df['high']
@@ -69,12 +105,19 @@ class MLModels:
             else:
                 vol_profile = "N/A"
 
+            # HMM confidence: use posterior probability
+            try:
+                posteriors = model.predict_proba(features[-1:])
+                confidence = int(posteriors.max() * 100)
+            except Exception:
+                confidence = 80
+
             return {
-                "type": regime_map.get(curr_regime, "undefined"),
-                "confidence": 85,
+                "type": regime_type,
+                "confidence": min(confidence, 99),
                 "indicators": {
                     "adx": round(adx_val, 1),
-                    "volatility": round(float(volatility.iloc[-1] * 100), 6),
+                    "volatility": round(float(volatility.iloc[-1] * 100), 4),
                     "volumeProfile": vol_profile,
                 },
             }
