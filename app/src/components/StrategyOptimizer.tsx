@@ -16,7 +16,8 @@ import {
   Zap,
   RotateCcw,
   Save,
-  Sparkles
+  Sparkles,
+  Check
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Strategy, StrategyMetrics, ValidationResults, Symbol, Timeframe } from '@/types/trading';
@@ -52,6 +53,7 @@ export function StrategyOptimizer({
   const [selectedResult, setSelectedResult] = useState<OptimizationResult | null>(null);
   const [parameterRanges, setParameterRanges] = useState<Record<string, { min: number; max: number; step: number }>>({});
   const [optimizationCriteria, setOptimizationCriteria] = useState<'sharpe' | 'profitFactor' | 'winRate' | 'wfe'>('sharpe');
+  const [showSuggestedFeedback, setShowSuggestedFeedback] = useState(false);
 
   // Inicializar ranges inteligentes baseados no tipo de estratégia
   const initializeSmartRanges = useCallback(() => {
@@ -96,6 +98,12 @@ export function StrategyOptimizer({
 
     setParameterRanges(ranges);
   }, [strategy]);
+
+  const handleSuggest = useCallback(() => {
+    initializeSmartRanges();
+    setShowSuggestedFeedback(true);
+    setTimeout(() => setShowSuggestedFeedback(false), 2000);
+  }, [initializeSmartRanges]);
 
   // Limpar estado quando a estratégia muda
   useEffect(() => {
@@ -205,17 +213,22 @@ export function StrategyOptimizer({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none">
-        <DialogHeader className="p-4 border-b border-slate-800 shrink-0">
-          <DialogTitle className="text-lg flex items-center justify-between">
-            <div className="flex items-center gap-3">
+      <DialogContent className="max-w-4xl bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none shadow-2xl">
+        <DialogHeader className="p-5 border-b border-slate-800 shrink-0">
+          <div className="flex flex-col gap-1.5">
+            <DialogTitle className="text-xl flex items-center gap-3">
               <Settings className="h-5 w-5 text-blue-400" />
               Otimizador: {strategy.name}
+            </DialogTitle>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-[10px] border-slate-700 bg-slate-800/50 text-slate-400 py-0.5">
+                {symbol.name}
+              </Badge>
+              <Badge variant="outline" className="text-[10px] border-slate-700 bg-slate-800/50 text-slate-400 py-0.5">
+                {timeframe.label}
+              </Badge>
             </div>
-            <Badge variant="outline" className="text-xs border-slate-700 text-slate-400">
-              {symbol.name} • {timeframe.label}
-            </Badge>
-          </DialogTitle>
+          </div>
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
@@ -229,11 +242,25 @@ export function StrategyOptimizer({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={initializeSmartRanges}
-                      className="h-7 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-400/10 px-2"
+                      onClick={handleSuggest}
+                      className={cn(
+                        "h-7 text-xs px-2 transition-all duration-300",
+                        showSuggestedFeedback
+                          ? "bg-emerald-500/20 text-emerald-400"
+                          : "text-blue-400 hover:text-blue-300 hover:bg-blue-400/10"
+                      )}
                     >
-                      <Sparkles className="h-3 w-3 mr-1" />
-                      Sugerir
+                      {showSuggestedFeedback ? (
+                        <>
+                          <Check className="h-3 w-3 mr-1" />
+                          Sugerido!
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-3 w-3 mr-1" />
+                          Sugerir
+                        </>
+                      )}
                     </Button>
                   </CardHeader>
                   <CardContent className="px-4 pb-4 pt-0">
@@ -241,8 +268,15 @@ export function StrategyOptimizer({
                       {Object.entries(strategy.parameters).map(([key, value]) => (
                         <div key={key} className="space-y-1.5 p-2 rounded-md bg-slate-900/50 border border-slate-800/50">
                           <div className="flex justify-between items-center px-1">
-                            <span className="text-xs font-medium text-slate-400">{key}</span>
-                            <span className="text-[10px] text-slate-500">Valor Atual: {value}</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-medium text-slate-400">{key}</span>
+                              {showSuggestedFeedback && (
+                                <Badge className="bg-emerald-500/10 text-emerald-500 border-none text-[8px] h-3.5 px-1 py-0 animate-in fade-in zoom-in duration-300">
+                                  Sugerido
+                                </Badge>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-slate-500">Atual: {value}</span>
                           </div>
                           <div className="grid grid-cols-3 gap-2">
                             <div className="space-y-1">
@@ -285,7 +319,7 @@ export function StrategyOptimizer({
                     <CardTitle className="text-sm font-medium text-slate-300">Critério de Otimização</CardTitle>
                   </CardHeader>
                   <CardContent className="px-4 pb-4 pt-0">
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="flex flex-col gap-2">
                       {[
                         { key: 'sharpe', label: 'Sharpe Ratio', icon: TrendingUp },
                         { key: 'profitFactor', label: 'Profit Factor', icon: BarChart3 },
@@ -297,19 +331,19 @@ export function StrategyOptimizer({
                           variant={optimizationCriteria === key ? 'default' : 'outline'}
                           onClick={() => setOptimizationCriteria(key as any)}
                           className={cn(
-                            "justify-start text-xs h-9",
+                            "justify-start text-xs h-10 w-full",
                             optimizationCriteria === key
-                              ? 'bg-blue-600 hover:bg-blue-700'
-                              : 'border-slate-700 text-slate-400 hover:bg-slate-800'
+                              ? 'bg-blue-600 hover:bg-blue-700 border-transparent'
+                              : 'border-slate-700 text-slate-400 hover:bg-slate-800/80 hover:text-slate-200'
                           )}
                         >
-                          <Icon className="h-3 w-3 mr-2" />
-                          {label}
+                          <Icon className="h-4 w-4 mr-3" />
+                          <span className="font-medium">{label}</span>
                         </Button>
                       ))}
                     </div>
 
-                    <div className="mt-6 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                    <div className="mt-6 p-4 rounded-lg bg-blue-500/10 border border-blue-500/20">
                       <p className="text-[10px] text-blue-400 leading-relaxed italic">
                         * A otimização utiliza Walk-Forward Analysis (WFA) e Monte Carlo para garantir que os parâmetros não sofram de overfitting.
                       </p>
@@ -321,7 +355,7 @@ export function StrategyOptimizer({
               <div className="flex justify-end pt-2">
                 <Button
                   onClick={startOptimization}
-                  className="bg-emerald-600 hover:bg-emerald-700 h-10 px-8"
+                  className="bg-emerald-600 hover:bg-emerald-700 h-11 px-10 shadow-lg shadow-emerald-500/20 font-semibold"
                 >
                   <Zap className="h-4 w-4 mr-2" />
                   Iniciar Otimização Real
@@ -349,19 +383,19 @@ export function StrategyOptimizer({
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
+                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700 text-center">
                   <div className="text-lg font-bold text-blue-400">#1</div>
                   <div className="text-[10px] text-slate-500 uppercase">Backtest Vetorizado</div>
                 </div>
-                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
+                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700 text-center">
                   <div className="text-lg font-bold text-purple-400">#2</div>
                   <div className="text-[10px] text-slate-500 uppercase">WFA Real Time</div>
                 </div>
-                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
+                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700 text-center">
                   <div className="text-lg font-bold text-amber-400">#3</div>
                   <div className="text-[10px] text-slate-500 uppercase">Monte Carlo Risk</div>
                 </div>
-                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
+                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700 text-center">
                   <div className="text-lg font-bold text-emerald-400">#4</div>
                   <div className="text-[10px] text-slate-500 uppercase">Statistical Ranking</div>
                 </div>
@@ -373,7 +407,7 @@ export function StrategyOptimizer({
             <div className="space-y-4">
               {/* Melhor Configuração Selecionada/Top */}
               {selectedResult && (
-                <Card className="bg-gradient-to-br from-slate-800 to-slate-900 border-emerald-500/30 overflow-hidden relative">
+                <Card className="bg-gradient-to-br from-slate-800 to-slate-900 border-emerald-500/30 overflow-hidden relative shadow-xl">
                   <div className="absolute top-0 right-0 p-3">
                     <Badge className="bg-emerald-500/20 text-emerald-400 border-none">
                       Top Rank #{selectedResult.rank}
@@ -392,7 +426,7 @@ export function StrategyOptimizer({
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-5 gap-4 py-2 border-y border-slate-800/50">
+                    <div className="grid grid-cols-5 gap-4 py-3 border-y border-slate-800/50">
                       {[
                         { label: 'Sharpe OOS', value: selectedResult.metrics.sharpeOOS?.toFixed(2), color: 'emerald' },
                         { label: 'WFE Efficiency', value: `${((selectedResult.metrics.wfe ?? 0) * 100).toFixed(0)}%`, color: 'blue' },
@@ -428,7 +462,7 @@ export function StrategyOptimizer({
                             setResults([]);
                             setSelectedResult(null);
                           }}
-                          className="border-slate-700 text-xs text-slate-400 h-8"
+                          className="border-slate-700 text-xs text-slate-400 h-9"
                         >
                           <RotateCcw className="h-3 w-3 mr-2" />
                           Refazer
@@ -436,7 +470,7 @@ export function StrategyOptimizer({
                         <Button
                           onClick={handleApplyConfiguration}
                           size="sm"
-                          className="bg-emerald-600 hover:bg-emerald-700 text-xs h-8 px-6"
+                          className="bg-emerald-600 hover:bg-emerald-700 text-xs h-9 px-8"
                         >
                           <Save className="h-3 w-3 mr-2" />
                           Aplicar Parâmetros
@@ -456,7 +490,7 @@ export function StrategyOptimizer({
                       key={result.rank}
                       onClick={() => setSelectedResult(result)}
                       className={cn(
-                        "flex items-center justify-between p-2 rounded border transition-all cursor-pointer",
+                        "flex items-center justify-between p-2.5 rounded border transition-all cursor-pointer",
                         selectedResult?.rank === result.rank
                           ? "bg-blue-500/10 border-blue-500/40"
                           : "bg-slate-800/40 border-slate-700/50 hover:bg-slate-800/80 hover:border-slate-600"
