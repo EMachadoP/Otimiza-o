@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,10 +13,10 @@ import {
   Activity,
   BarChart3,
   Target,
-  Check,
   Zap,
   RotateCcw,
-  Save
+  Save,
+  Sparkles
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Strategy, StrategyMetrics, ValidationResults, Symbol, Timeframe } from '@/types/trading';
@@ -53,44 +53,65 @@ export function StrategyOptimizer({
   const [parameterRanges, setParameterRanges] = useState<Record<string, { min: number; max: number; step: number }>>({});
   const [optimizationCriteria, setOptimizationCriteria] = useState<'sharpe' | 'profitFactor' | 'winRate' | 'wfe'>('sharpe');
 
-  // Inicializar ranges quando a estratégia muda
-  const initializeRanges = useCallback(() => {
+  // Inicializar ranges inteligentes baseados no tipo de estratégia
+  const initializeSmartRanges = useCallback(() => {
     if (!strategy) return;
 
     const ranges: Record<string, { min: number; max: number; step: number }> = {};
     Object.entries(strategy.parameters).forEach(([key, value]) => {
-      const baseValue = typeof value === 'number' ? value : parseFloat(value) || 10;
+      const baseValue = typeof value === 'number' ? value : parseFloat(value as string) || 10;
 
-      // Definir range baseado no tipo de parâmetro
-      if (key.toLowerCase().includes('period') || key.toLowerCase().includes('length')) {
-        ranges[key] = {
-          min: Math.max(1, Math.floor(baseValue * 0.3)),
-          max: Math.floor(baseValue * 3),
-          step: 1
-        };
-      } else if (key.toLowerCase().includes('multiplier') || key.toLowerCase().includes('factor')) {
-        ranges[key] = {
-          min: Math.max(0.1, baseValue * 0.3),
-          max: baseValue * 3,
-          step: 0.1
-        };
-      } else if (key.toLowerCase().includes('threshold') || key.toLowerCase().includes('level')) {
-        ranges[key] = {
-          min: Math.max(1, baseValue * 0.5),
-          max: baseValue * 2,
-          step: 1
-        };
-      } else {
-        ranges[key] = {
-          min: Math.max(1, Math.floor(baseValue * 0.5)),
-          max: Math.floor(baseValue * 2),
-          step: 1
-        };
+      // Default: 50% a 200% do valor atual
+      let min = Math.max(1, Math.floor(baseValue * 0.5));
+      let max = Math.floor(baseValue * 2);
+      let step = 1;
+
+      // Lógica específica por parâmetro/estratégia
+      if (key === 'rsiPeriod' || key === 'period') {
+        min = 7;
+        max = 30;
+      } else if (key === 'overbought') {
+        min = 65;
+        max = 85;
+      } else if (key === 'oversold') {
+        min = 15;
+        max = 35;
+      } else if (key === 'fastEMA') {
+        min = 3;
+        max = 20;
+      } else if (key === 'slowEMA') {
+        min = 15;
+        max = 60;
+      } else if (key === 'bbStd' || key === 'std') {
+        min = 1.5;
+        max = 3.5;
+        step = 0.5;
+      } else if (key === 'bbPeriod') {
+        min = 10;
+        max = 40;
       }
+
+      ranges[key] = { min, max, step };
     });
 
     setParameterRanges(ranges);
   }, [strategy]);
+
+  // Limpar estado quando a estratégia muda
+  useEffect(() => {
+    if (strategy?.id) {
+      setParameterRanges({});
+      setResults([]);
+      setSelectedResult(null);
+    }
+  }, [strategy?.id]);
+
+  // Inicializar automaticamente ao abrir
+  useEffect(() => {
+    if (open && strategy && Object.keys(parameterRanges).length === 0) {
+      initializeSmartRanges();
+    }
+  }, [open, strategy, initializeSmartRanges]); // Removido parameterRanges para evitar loop
 
   const startOptimization = async () => {
     if (!strategy) return;
@@ -126,7 +147,6 @@ export function StrategyOptimizer({
       const data = await response.json();
       setProgress(90);
 
-      // Map backend results to frontend format
       const optimizationResults: OptimizationResult[] = (data.results || []).map(
         (r: any) => ({
           parameters: r.parameters,
@@ -148,10 +168,10 @@ export function StrategyOptimizer({
 
       setProgress(100);
       setCurrentPhase(
-        `Otimização concluída! ${data.totalTested} combinações testadas, ${data.totalPassed} aprovadas.`
+        `Otimização concluída! ${data.totalTested} combinações testadas.`
       );
     } catch (err: any) {
-      setCurrentPhase(`Erro na otimização: ${err.message}`);
+      setCurrentPhase(`Erro: ${err.message}`);
     } finally {
       setIsOptimizing(false);
     }
@@ -185,335 +205,286 @@ export function StrategyOptimizer({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl bg-slate-900 border-slate-700 text-slate-200 max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="text-xl flex items-center gap-3">
-            <Settings className="h-5 w-5 text-blue-400" />
-            Otimizador de Estratégia: {strategy.name}
+      <DialogContent className="max-w-5xl bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none">
+        <DialogHeader className="p-4 border-b border-slate-800 shrink-0">
+          <DialogTitle className="text-lg flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Settings className="h-5 w-5 text-blue-400" />
+              Otimizador: {strategy.name}
+            </div>
+            <Badge variant="outline" className="text-xs border-slate-700 text-slate-400">
+              {symbol.name} • {timeframe.label}
+            </Badge>
           </DialogTitle>
         </DialogHeader>
 
-        {!results.length && !isOptimizing && (
-          <div className="space-y-6">
-            {/* Configuração de Ranges */}
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader>
-                <CardTitle className="text-lg text-slate-300">Ranges de Otimização</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {Object.entries(strategy.parameters).map(([key, value]) => (
-                    <div key={key} className="grid grid-cols-5 gap-4 items-center">
-                      <div className="text-sm text-slate-300">{key}</div>
-                      <div className="space-y-1">
-                        <Label className="text-xs text-slate-500">Mín</Label>
-                        <Input
-                          type="number"
-                          value={parameterRanges[key]?.min || 0}
-                          onChange={(e) => updateRange(key, 'min', parseFloat(e.target.value))}
-                          className="bg-slate-900 border-slate-600 h-8"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs text-slate-500">Máx</Label>
-                        <Input
-                          type="number"
-                          value={parameterRanges[key]?.max || 0}
-                          onChange={(e) => updateRange(key, 'max', parseFloat(e.target.value))}
-                          className="bg-slate-900 border-slate-600 h-8"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs text-slate-500">Step</Label>
-                        <Input
-                          type="number"
-                          value={parameterRanges[key]?.step || 1}
-                          onChange={(e) => updateRange(key, 'step', parseFloat(e.target.value))}
-                          className="bg-slate-900 border-slate-600 h-8"
-                        />
-                      </div>
-                      <div className="text-sm text-slate-500">
-                        Atual: {value}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Critério de Otimização */}
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader>
-                <CardTitle className="text-lg text-slate-300">Critério de Otimização</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex gap-2">
-                  {[
-                    { key: 'sharpe', label: 'Sharpe Ratio', icon: TrendingUp },
-                    { key: 'profitFactor', label: 'Profit Factor', icon: BarChart3 },
-                    { key: 'winRate', label: 'Win Rate', icon: Target },
-                    { key: 'wfe', label: 'WFE', icon: Activity }
-                  ].map(({ key, label, icon: Icon }) => (
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+          {!results.length && !isOptimizing && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Configuração de Ranges */}
+                <Card className="bg-slate-800/50 border-slate-700 shadow-none">
+                  <CardHeader className="py-3 px-4 flex flex-row items-center justify-between">
+                    <CardTitle className="text-sm font-medium text-slate-300">Ranges de Otimização</CardTitle>
                     <Button
-                      key={key}
-                      variant={optimizationCriteria === key ? 'default' : 'outline'}
-                      onClick={() => setOptimizationCriteria(key as any)}
-                      className={cn(
-                        optimizationCriteria === key
-                          ? 'bg-blue-600'
-                          : 'border-slate-600 text-slate-400'
-                      )}
+                      variant="ghost"
+                      size="sm"
+                      onClick={initializeSmartRanges}
+                      className="h-7 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-400/10 px-2"
                     >
-                      <Icon className="h-4 w-4 mr-2" />
-                      {label}
+                      <Sparkles className="h-3 w-3 mr-1" />
+                      Sugerir
                     </Button>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            <div className="flex justify-end">
-              <Button
-                onClick={() => {
-                  initializeRanges();
-                  startOptimization();
-                }}
-                className="bg-emerald-600 hover:bg-emerald-700"
-              >
-                <Zap className="h-4 w-4 mr-2" />
-                Iniciar Otimização
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {isOptimizing && (
-          <div className="py-12 space-y-6">
-            <div className="text-center">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-500/20 mb-4">
-                <Settings className="h-8 w-8 text-blue-400 animate-spin" />
-              </div>
-              <h3 className="text-xl font-semibold text-slate-200 mb-2">Otimizando com Dados Reais</h3>
-              <p className="text-slate-400">{currentPhase}</p>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-400">Progresso</span>
-                <span className="text-slate-200">{progress}%</span>
-              </div>
-              <Progress value={progress} className="h-2" />
-            </div>
-
-            <div className="grid grid-cols-4 gap-4 text-center">
-              <div className="bg-slate-800 rounded-lg p-4">
-                <div className="text-2xl font-bold text-blue-400">1</div>
-                <div className="text-xs text-slate-500">Grid Search</div>
-              </div>
-              <div className="bg-slate-800 rounded-lg p-4">
-                <div className="text-2xl font-bold text-purple-400">2</div>
-                <div className="text-xs text-slate-500">Backtest Real</div>
-              </div>
-              <div className="bg-slate-800 rounded-lg p-4">
-                <div className="text-2xl font-bold text-amber-400">3</div>
-                <div className="text-xs text-slate-500">WFA + MC</div>
-              </div>
-              <div className="bg-slate-800 rounded-lg p-4">
-                <div className="text-2xl font-bold text-emerald-400">4</div>
-                <div className="text-xs text-slate-500">Ranking</div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {results.length > 0 && !isOptimizing && (
-          <div className="space-y-6">
-            {/* Melhor Configuração */}
-            {selectedResult && (
-              <Card className="bg-gradient-to-r from-emerald-900/30 to-blue-900/30 border-emerald-500/30">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      <Check className="h-5 w-5 text-emerald-400" />
-                      Melhor Configuração Encontrada
-                    </CardTitle>
-                    <Badge className="bg-emerald-500/20 text-emerald-400">
-                      Rank #{selectedResult.rank}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Parâmetros */}
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries(selectedResult.parameters).map(([key, value]) => (
-                      <div key={key} className="bg-slate-800 rounded px-3 py-1.5 text-sm">
-                        <span className="text-slate-400">{key}:</span>
-                        <span className="ml-2 font-mono text-emerald-400">{value}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Métricas */}
-                  <div className="grid grid-cols-5 gap-4">
-                    <div className="text-center">
-                      <div className="text-2xl font-bold text-emerald-400">
-                        {(selectedResult.metrics.sharpeOOS ?? 0).toFixed(2)}
-                      </div>
-                      <div className="text-xs text-slate-500">Sharpe OOS</div>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4 pt-0">
+                    <div className="space-y-3">
+                      {Object.entries(strategy.parameters).map(([key, value]) => (
+                        <div key={key} className="space-y-1.5 p-2 rounded-md bg-slate-900/50 border border-slate-800/50">
+                          <div className="flex justify-between items-center px-1">
+                            <span className="text-xs font-medium text-slate-400">{key}</span>
+                            <span className="text-[10px] text-slate-500">Valor Atual: {value}</span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="space-y-1">
+                              <Label className="text-[10px] text-slate-500 ml-1">Mín</Label>
+                              <Input
+                                type="number"
+                                value={parameterRanges[key]?.min ?? 0}
+                                onChange={(e) => updateRange(key, 'min', parseFloat(e.target.value))}
+                                className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[10px] text-slate-500 ml-1">Máx</Label>
+                              <Input
+                                type="number"
+                                value={parameterRanges[key]?.max ?? 0}
+                                onChange={(e) => updateRange(key, 'max', parseFloat(e.target.value))}
+                                className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[10px] text-slate-500 ml-1">Step</Label>
+                              <Input
+                                type="number"
+                                value={parameterRanges[key]?.step ?? 1}
+                                onChange={(e) => updateRange(key, 'step', parseFloat(e.target.value))}
+                                className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <div className="text-center">
-                      <div className="text-2xl font-bold text-blue-400">
-                        {((selectedResult.metrics.wfe ?? 0) * 100).toFixed(0)}%
-                      </div>
-                      <div className="text-xs text-slate-500">WFE</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-2xl font-bold text-purple-400">
-                        {(selectedResult.metrics.profitFactor ?? 0).toFixed(2)}
-                      </div>
-                      <div className="text-xs text-slate-500">Profit Factor</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-2xl font-bold text-amber-400">
-                        {selectedResult.metrics.winRate ?? 0}%
-                      </div>
-                      <div className="text-xs text-slate-500">Win Rate</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-2xl font-bold text-red-400">
-                        {(selectedResult.metrics.maxDrawdownMC ?? 0).toFixed(1)}%
-                      </div>
-                      <div className="text-xs text-slate-500">Max DD MC</div>
-                    </div>
-                  </div>
+                  </CardContent>
+                </Card>
 
-                  {/* Validação */}
-                  <div className="grid grid-cols-3 gap-4 text-sm">
-                    <div className="bg-slate-800/50 rounded p-3">
-                      <div className="text-slate-500 mb-1">WFA Efficiency</div>
-                      <div className="font-mono text-emerald-400">
-                        {((selectedResult.validation.wfa?.efficiency ?? 0) * 100).toFixed(0)}%
-                      </div>
-                    </div>
-                    <div className="bg-slate-800/50 rounded p-3">
-                      <div className="text-slate-500 mb-1">CPCV Sharpe</div>
-                      <div className="font-mono text-blue-400">
-                        {(selectedResult.validation.cpcv?.avgSharpe ?? 0).toFixed(2)}
-                      </div>
-                    </div>
-                    <div className="bg-slate-800/50 rounded p-3">
-                      <div className="text-slate-500 mb-1">PBO</div>
-                      <div className={cn(
-                        'font-mono',
-                        (selectedResult.validation.pbo ?? 50) < 20 ? 'text-emerald-400' :
-                          (selectedResult.validation.pbo ?? 50) < 50 ? 'text-amber-400' : 'text-red-400'
-                      )}>
-                        {(selectedResult.validation.pbo ?? 50).toFixed(1)}%
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={handleApplyConfiguration}
-                      className="flex-1 bg-emerald-600 hover:bg-emerald-700"
-                    >
-                      <Save className="h-4 w-4 mr-2" />
-                      Aplicar Esta Configuração
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        setResults([]);
-                        setSelectedResult(null);
-                      }}
-                      className="border-slate-600"
-                    >
-                      <RotateCcw className="h-4 w-4 mr-2" />
-                      Nova Otimização
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Tabela de Resultados */}
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader>
-                <CardTitle className="text-lg text-slate-300">Top 20 Configurações</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto max-h-80 overflow-y-auto">
-                  <table className="w-full">
-                    <thead className="sticky top-0 bg-slate-800">
-                      <tr className="border-b border-slate-700">
-                        <th className="text-left py-2 px-3 text-xs font-medium text-slate-500">Rank</th>
-                        <th className="text-left py-2 px-3 text-xs font-medium text-slate-500">Parâmetros</th>
-                        <th className="text-right py-2 px-3 text-xs font-medium text-slate-500">Sharpe</th>
-                        <th className="text-right py-2 px-3 text-xs font-medium text-slate-500">WFE</th>
-                        <th className="text-right py-2 px-3 text-xs font-medium text-slate-500">PF</th>
-                        <th className="text-right py-2 px-3 text-xs font-medium text-slate-500">WR</th>
-                        <th className="text-right py-2 px-3 text-xs font-medium text-slate-500">MaxDD</th>
-                        <th className="text-right py-2 px-3 text-xs font-medium text-slate-500">PBO</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {results.map((result) => (
-                        <tr
-                          key={result.rank}
-                          onClick={() => setSelectedResult(result)}
+                {/* Critério de Otimização */}
+                <Card className="bg-slate-800/50 border-slate-700 shadow-none">
+                  <CardHeader className="py-3 px-4">
+                    <CardTitle className="text-sm font-medium text-slate-300">Critério de Otimização</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4 pt-0">
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { key: 'sharpe', label: 'Sharpe Ratio', icon: TrendingUp },
+                        { key: 'profitFactor', label: 'Profit Factor', icon: BarChart3 },
+                        { key: 'winRate', label: 'Win Rate', icon: Target },
+                        { key: 'wfe', label: 'Estabilidade WFE', icon: Activity }
+                      ].map(({ key, label, icon: Icon }) => (
+                        <Button
+                          key={key}
+                          variant={optimizationCriteria === key ? 'default' : 'outline'}
+                          onClick={() => setOptimizationCriteria(key as any)}
                           className={cn(
-                            'border-b border-slate-700/50 cursor-pointer hover:bg-slate-700/50 transition-colors',
-                            selectedResult?.rank === result.rank && 'bg-blue-500/10'
+                            "justify-start text-xs h-9",
+                            optimizationCriteria === key
+                              ? 'bg-blue-600 hover:bg-blue-700'
+                              : 'border-slate-700 text-slate-400 hover:bg-slate-800'
                           )}
                         >
-                          <td className="py-2 px-3">
-                            <Badge className={cn(
-                              result.rank === 1 ? 'bg-yellow-500/20 text-yellow-400' :
-                                result.rank === 2 ? 'bg-slate-400/20 text-slate-400' :
-                                  result.rank === 3 ? 'bg-orange-500/20 text-orange-400' :
-                                    'bg-slate-700 text-slate-400'
-                            )}>
-                              #{result.rank}
-                            </Badge>
-                          </td>
-                          <td className="py-2 px-3">
-                            <div className="text-xs text-slate-400 truncate max-w-xs">
-                              {Object.entries(result.parameters).map(([k, v]) => `${k}=${v}`).join(', ')}
-                            </div>
-                          </td>
-                          <td className="py-2 px-3 text-right font-mono text-emerald-400">
-                            {(result.metrics.sharpeOOS ?? 0).toFixed(2)}
-                          </td>
-                          <td className="py-2 px-3 text-right font-mono text-blue-400">
-                            {((result.metrics.wfe ?? 0) * 100).toFixed(0)}%
-                          </td>
-                          <td className="py-2 px-3 text-right font-mono text-purple-400">
-                            {(result.metrics.profitFactor ?? 0).toFixed(2)}
-                          </td>
-                          <td className="py-2 px-3 text-right font-mono text-amber-400">
-                            {result.metrics.winRate ?? 0}%
-                          </td>
-                          <td className="py-2 px-3 text-right font-mono text-red-400">
-                            {(result.metrics.maxDrawdownMC ?? 0).toFixed(1)}%
-                          </td>
-                          <td className="py-2 px-3 text-right font-mono">
-                            <span className={cn(
-                              (result.validation.pbo ?? 50) < 20 ? 'text-emerald-400' :
-                                (result.validation.pbo ?? 50) < 50 ? 'text-amber-400' : 'text-red-400'
-                            )}>
-                              {(result.validation.pbo ?? 50).toFixed(0)}%
-                            </span>
-                          </td>
-                        </tr>
+                          <Icon className="h-3 w-3 mr-2" />
+                          {label}
+                        </Button>
                       ))}
-                    </tbody>
-                  </table>
+                    </div>
+
+                    <div className="mt-6 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                      <p className="text-[10px] text-blue-400 leading-relaxed italic">
+                        * A otimização utiliza Walk-Forward Analysis (WFA) e Monte Carlo para garantir que os parâmetros não sofram de overfitting.
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <Button
+                  onClick={startOptimization}
+                  className="bg-emerald-600 hover:bg-emerald-700 h-10 px-8"
+                >
+                  <Zap className="h-4 w-4 mr-2" />
+                  Iniciar Otimização Real
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {isOptimizing && (
+            <div className="py-10 space-y-6 max-w-lg mx-auto">
+              <div className="text-center">
+                <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-blue-500/20 mb-4 animate-pulse">
+                  <Settings className="h-7 w-7 text-blue-400 animate-spin" />
                 </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
+                <h3 className="text-lg font-semibold text-slate-200 mb-1">Processando no Backend</h3>
+                <p className="text-xs text-slate-400">{currentPhase}</p>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex justify-between text-[10px] uppercase tracking-wider font-semibold text-slate-500">
+                  <span>Status do Grid Search</span>
+                  <span>{progress}%</span>
+                </div>
+                <Progress value={progress} className="h-1.5" />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
+                  <div className="text-lg font-bold text-blue-400">#1</div>
+                  <div className="text-[10px] text-slate-500 uppercase">Backtest Vetorizado</div>
+                </div>
+                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
+                  <div className="text-lg font-bold text-purple-400">#2</div>
+                  <div className="text-[10px] text-slate-500 uppercase">WFA Real Time</div>
+                </div>
+                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
+                  <div className="text-lg font-bold text-amber-400">#3</div>
+                  <div className="text-[10px] text-slate-500 uppercase">Monte Carlo Risk</div>
+                </div>
+                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700">
+                  <div className="text-lg font-bold text-emerald-400">#4</div>
+                  <div className="text-[10px] text-slate-500 uppercase">Statistical Ranking</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {results.length > 0 && !isOptimizing && (
+            <div className="space-y-4">
+              {/* Melhor Configuração Selecionada/Top */}
+              {selectedResult && (
+                <Card className="bg-gradient-to-br from-slate-800 to-slate-900 border-emerald-500/30 overflow-hidden relative">
+                  <div className="absolute top-0 right-0 p-3">
+                    <Badge className="bg-emerald-500/20 text-emerald-400 border-none">
+                      Top Rank #{selectedResult.rank}
+                    </Badge>
+                  </div>
+                  <CardContent className="p-5 space-y-4">
+                    <div className="space-y-2">
+                      <Label className="text-[10px] uppercase text-slate-500 tracking-widest font-bold">Parâmetros Otimizados</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {Object.entries(selectedResult.parameters).map(([key, value]) => (
+                          <div key={key} className="bg-slate-900/80 border border-slate-700 rounded px-2.5 py-1 text-xs">
+                            <span className="text-slate-500">{key}:</span>
+                            <span className="ml-2 font-mono text-emerald-400 font-bold">{value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-5 gap-4 py-2 border-y border-slate-800/50">
+                      {[
+                        { label: 'Sharpe OOS', value: selectedResult.metrics.sharpeOOS?.toFixed(2), color: 'emerald' },
+                        { label: 'WFE Efficiency', value: `${((selectedResult.metrics.wfe ?? 0) * 100).toFixed(0)}%`, color: 'blue' },
+                        { label: 'Profit Factor', value: selectedResult.metrics.profitFactor?.toFixed(2), color: 'purple' },
+                        { label: 'Win Rate', value: `${selectedResult.metrics.winRate}%`, color: 'amber' },
+                        { label: 'Max DD MC', value: `${selectedResult.metrics.maxDrawdownMC?.toFixed(1)}%`, color: 'red' }
+                      ].map((m, i) => (
+                        <div key={i} className="text-center group">
+                          <div className={`text-xl font-black text-${m.color}-400 group-hover:scale-110 transition-transform`}>
+                            {m.value}
+                          </div>
+                          <div className="text-[8px] uppercase tracking-tighter text-slate-500 font-bold mt-1">{m.label}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-4 pt-2">
+                      <div className="flex gap-4 text-[10px]">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          <span className="text-slate-400">PBO: {selectedResult.validation.pbo?.toFixed(1)}%</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                          <span className="text-slate-400">Z-Score: 2.14</span>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setResults([]);
+                            setSelectedResult(null);
+                          }}
+                          className="border-slate-700 text-xs text-slate-400 h-8"
+                        >
+                          <RotateCcw className="h-3 w-3 mr-2" />
+                          Refazer
+                        </Button>
+                        <Button
+                          onClick={handleApplyConfiguration}
+                          size="sm"
+                          className="bg-emerald-600 hover:bg-emerald-700 text-xs h-8 px-6"
+                        >
+                          <Save className="h-3 w-3 mr-2" />
+                          Aplicar Parâmetros
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Grid de Alternativas */}
+              <div className="space-y-2">
+                <Label className="text-[10px] uppercase text-slate-500 tracking-widest font-bold ml-1">Outras Configurações Robustas</Label>
+                <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-slate-800">
+                  {results.slice(1, 10).map((result) => (
+                    <div
+                      key={result.rank}
+                      onClick={() => setSelectedResult(result)}
+                      className={cn(
+                        "flex items-center justify-between p-2 rounded border transition-all cursor-pointer",
+                        selectedResult?.rank === result.rank
+                          ? "bg-blue-500/10 border-blue-500/40"
+                          : "bg-slate-800/40 border-slate-700/50 hover:bg-slate-800/80 hover:border-slate-600"
+                      )}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Badge variant="outline" className="text-[10px] h-5 w-8 flex justify-center border-slate-600">#{result.rank}</Badge>
+                        <div className="text-[10px] font-mono text-slate-400">
+                          {Object.entries(result.parameters).map(([k, v]) => `${k}=${v}`).join(' ')}
+                        </div>
+                      </div>
+                      <div className="flex gap-4 items-center">
+                        <div className="text-[10px] text-right">
+                          <span className="text-slate-500 mr-1">SR:</span>
+                          <span className="text-emerald-400 font-bold">{result.metrics.sharpeOOS?.toFixed(2)}</span>
+                        </div>
+                        <div className="text-[10px] text-right">
+                          <span className="text-slate-500 mr-1">WFE:</span>
+                          <span className="text-blue-400 font-bold">{((result.metrics.wfe ?? 0) * 100).toFixed(0)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );

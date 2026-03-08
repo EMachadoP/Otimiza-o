@@ -45,6 +45,20 @@ class BacktestEngine:
             "parameters": {"fastEMA": 5, "slowEMA": 13, "rsiPeriod": 7},
             "indicators": ["EMA(5)", "EMA(13)", "RSI(7)"],
         },
+        {
+            "id": "strat_mean_reversion",
+            "name": "Mean Reversion %B",
+            "type": "mean_reversion",
+            "parameters": {"period": 20, "std": 2.0},
+            "indicators": ["BB %B (20, 2)"],
+        },
+        {
+            "id": "strat_donchian",
+            "name": "Donchian Breakout",
+            "type": "donchian",
+            "parameters": {"period": 20},
+            "indicators": ["Donchian Channel(20)"],
+        },
     ]
 
     def _generate_signals(self, df: pd.DataFrame, strategy_type: str, params: Dict) -> pd.Series:
@@ -88,6 +102,22 @@ class BacktestEngine:
             trend = np.where(fast > slow, 1, -1)
             momentum = np.where((rsi > 50) & (rsi < 80), 1, np.where((rsi < 50) & (rsi > 20), -1, 0))
             signals = np.where(trend == momentum, trend, 0)
+
+        elif strategy_type == "mean_reversion":
+            period = params.get('period', 20)
+            std_dev = params.get('std', 2.0)
+            sma = close.rolling(window=period).mean()
+            std = close.rolling(window=period).std()
+            upper = sma + std_dev * std
+            lower = sma - std_dev * std
+            # Sell at upper, buy at lower
+            signals = np.where(close > upper, -1, np.where(close < lower, 1, 0))
+
+        elif strategy_type == "donchian":
+            period = params.get('period', 20)
+            upper = close.rolling(window=period).max().shift(1)
+            lower = close.rolling(window=period).min().shift(1)
+            signals = np.where(close > upper, 1, np.where(close < lower, -1, 0))
 
         else:  # Default: EMA crossover
             fast = close.ewm(span=9, adjust=False).mean()

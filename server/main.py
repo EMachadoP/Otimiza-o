@@ -56,7 +56,20 @@ async def get_status():
 @app.get("/api/symbols")
 async def get_symbols():
     symbols = mt5_bridge.get_symbols()
-    return [{"name": s} for s in symbols[:20]]
+    
+    # Prioritization logic: Major Forex and Metals (Gold)
+    majors = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "BTCUSD", "ETHUSD"]
+    
+    # Sort: Prioritize majors, then alphabetical
+    def sort_key(s):
+        # Check if symbol contains any major names (handling suffixes like 'm')
+        for m in majors:
+            if m.lower() in s.lower():
+                return (0, s)
+        return (1, s)
+    
+    sorted_symbols = sorted(symbols, key=sort_key)
+    return [{"name": s} for s in sorted_symbols[:100]]
 
 
 @app.get("/api/ohlcv")
