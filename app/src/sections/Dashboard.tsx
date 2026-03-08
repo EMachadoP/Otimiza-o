@@ -42,6 +42,7 @@ export function Dashboard() {
     heatmapData,
     mlInsights,
     loading,
+    error,
     setSelectedSymbol,
     setSelectedTimeframe,
     refreshData
@@ -233,6 +234,13 @@ export function Dashboard() {
           )}
         </div>
 
+        {/* Error Banner */}
+        {error && (
+          <div className="mb-4 p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
+            ⚠️ {error}
+          </div>
+        )}
+
         {/* Grid Layout */}
         <div className="grid grid-cols-12 gap-6">
           {/* Main Chart - 8 columns */}
@@ -257,6 +265,13 @@ export function Dashboard() {
                     <div className="flex flex-col items-center gap-4">
                       <RefreshCw className="h-8 w-8 animate-spin text-blue-500" />
                       <span className="text-slate-400">Carregando dados...</span>
+                    </div>
+                  </div>
+                ) : data.length === 0 ? (
+                  <div className="h-[500px] flex items-center justify-center">
+                    <div className="flex flex-col items-center gap-4">
+                      <span className="text-4xl">📊</span>
+                      <span className="text-slate-400">Sem dados para este símbolo/timeframe</span>
                     </div>
                   </div>
                 ) : (
