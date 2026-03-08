@@ -16,7 +16,6 @@ import {
   Target,
   Zap,
   RotateCcw,
-  Save,
   Sparkles,
   Check,
   ShieldCheck,
@@ -96,6 +95,14 @@ export function StrategyOptimizer({
       } else if (key === 'bbPeriod') {
         min = 10;
         max = 40;
+      } else if (key === 'stopLoss') {
+        min = 20;
+        max = 100;
+        step = 5;
+      } else if (key === 'takeProfit') {
+        min = 20;
+        max = 200;
+        step = 10;
       }
 
       ranges[key] = { min, max, step };

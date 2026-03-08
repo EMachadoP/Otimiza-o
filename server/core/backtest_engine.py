@@ -14,49 +14,49 @@ class BacktestEngine:
             "id": "strat_ema_cross",
             "name": "EMA Crossover",
             "type": "trend",
-            "parameters": {"fastEMA": 9, "slowEMA": 21},
+            "parameters": {"fastEMA": 9, "slowEMA": 21, "stopLoss": 50, "takeProfit": 100},
             "indicators": ["EMA(9)", "EMA(21)"],
         },
         {
             "id": "strat_rsi_reversal",
             "name": "RSI Reversal",
             "type": "reversal",
-            "parameters": {"rsiPeriod": 14, "overbought": 70, "oversold": 30},
+            "parameters": {"rsiPeriod": 14, "overbought": 70, "oversold": 30, "stopLoss": 40, "takeProfit": 80},
             "indicators": ["RSI(14)"],
         },
         {
             "id": "strat_bb_breakout",
             "name": "Bollinger Breakout",
             "type": "breakout",
-            "parameters": {"bbPeriod": 20, "bbStd": 2.0},
+            "parameters": {"bbPeriod": 20, "bbStd": 2.0, "stopLoss": 60, "takeProfit": 120},
             "indicators": ["BB(20,2)"],
         },
         {
             "id": "strat_macd_trend",
             "name": "MACD Trend",
             "type": "trend",
-            "parameters": {"fastEMA": 12, "slowEMA": 26, "signalEMA": 9},
+            "parameters": {"fastEMA": 12, "slowEMA": 26, "signalEMA": 9, "stopLoss": 50, "takeProfit": 150},
             "indicators": ["MACD(12,26,9)"],
         },
         {
             "id": "strat_scalper",
             "name": "Scalper Momentum",
             "type": "scalping",
-            "parameters": {"fastEMA": 5, "slowEMA": 13, "rsiPeriod": 7},
+            "parameters": {"fastEMA": 5, "slowEMA": 13, "rsiPeriod": 7, "stopLoss": 20, "takeProfit": 40},
             "indicators": ["EMA(5)", "EMA(13)", "RSI(7)"],
         },
         {
             "id": "strat_mean_reversion",
             "name": "Mean Reversion %B",
             "type": "mean_reversion",
-            "parameters": {"period": 20, "std": 2.0},
+            "parameters": {"period": 20, "std": 2.0, "stopLoss": 30, "takeProfit": 60},
             "indicators": ["BB %B (20, 2)"],
         },
         {
             "id": "strat_donchian",
             "name": "Donchian Breakout",
             "type": "donchian",
-            "parameters": {"period": 20},
+            "parameters": {"period": 20, "stopLoss": 50, "takeProfit": 150},
             "indicators": ["Donchian Channel(20)"],
         },
     ]
@@ -176,8 +176,52 @@ class BacktestEngine:
         try:
             signals = self._generate_signals(df, strategy_type, params)
             initial_balance = 10000
-            returns = df['close'].pct_change()
+            # Vectorized Returns calculation
+            close = df['close']
+            returns = close.pct_change()
+            
+            # SL/TP Logic (Pips/Points)
+            # Assuming 1 pip = 0.0001 (or 0.01 for JPY/BTC) - simplified for now
+            # Better: use symbol digits from MT5 if available
+            pip_size = 0.0001 if symbol_name and ("JPY" not in symbol_name and "BTC" not in symbol_name and "XAU" not in symbol_name) else 0.01
+            if "XAU" in symbol_name: pip_size = 0.1 # Gold
+            if "BTC" in symbol_name: pip_size = 1.0 # Crypto
+            
+            sl_pips = params.get('stopLoss', 0)
+            tp_pips = params.get('takeProfit', 0)
+            
             strategy_returns = signals.shift(1) * returns
+            
+            # Simplified SL/TP hit detection using vectorized logic
+            # This is a bit complex in pure vectorization but we can approximate:
+            if sl_pips > 0 or tp_pips > 0:
+                high = df['high']
+                low = df['low']
+                
+                # SL/TP prices for each potential trade entry
+                # (Only valid on bars where sign changes)
+                entry_prices = close.where(signals.diff().abs() > 0).ffill()
+                
+                if sl_pips > 0:
+                    sl_dist = sl_pips * pip_size
+                    # Long SL hit: Low < Entry - Dist
+                    # Short SL hit: High > Entry + Dist
+                    long_sl_hit = (signals.shift(1) == 1) & (low < (entry_prices - sl_dist))
+                    short_sl_hit = (signals.shift(1) == -1) & (high > (entry_prices + sl_dist))
+                    
+                    # Cap returns at -SL dist %
+                    # (Approximate: assuming we hit SL at exactly the price)
+                    sl_hit = long_sl_hit | short_sl_hit
+                    strategy_returns[sl_hit] = - (sl_dist / entry_prices)
+                
+                if tp_pips > 0:
+                    tp_dist = tp_pips * pip_size
+                    long_tp_hit = (signals.shift(1) == 1) & (high > (entry_prices + tp_dist))
+                    short_tp_hit = (signals.shift(1) == -1) & (low < (entry_prices - tp_dist))
+                    
+                    tp_hit = long_tp_hit | short_tp_hit
+                    strategy_returns[tp_hit] = (tp_dist / entry_prices)
+
             equity_curve = (1 + strategy_returns).cumprod() * initial_balance
             equity_curve = equity_curve.ffill().fillna(initial_balance)
 
