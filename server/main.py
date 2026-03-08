@@ -1,18 +1,26 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional, Dict
+from contextlib import asynccontextmanager
+from typing import Dict
 import uvicorn
 import sys
 import os
 
-# Add server directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.mt5_bridge import mt5_bridge
 from core.ml_models import ml_models
 from core.backtest_engine import backtest_engine
 
-app = FastAPI(title="TradeStrategist API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    mt5_bridge.connect()
+    yield
+    mt5_bridge.disconnect()
+
+
+app = FastAPI(title="TradeStrategist API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,61 +29,136 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-async def startup_event():
-    mt5_bridge.connect()
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    mt5_bridge.disconnect()
+@app.get("/")
+async def root():
+    return {
+        "name": "TradeStrategist Pro API",
+        "version": "2.0.0",
+        "status": "running",
+        "frontend": "http://localhost:5173",
+        "endpoints": [
+            "/api/status", "/api/symbols", "/api/ohlcv",
+            "/api/analysis", "/api/strategies", "/api/backtest",
+            "/api/validate", "/api/heatmap", "/api/ml-insights",
+        ],
+    }
+
 
 @app.get("/api/status")
 async def get_status():
     return mt5_bridge.get_status()
 
+
 @app.get("/api/symbols")
 async def get_symbols():
     symbols = mt5_bridge.get_symbols()
-    return [{"name": s} for s in symbols[:20]] # Limit to 20 for now
+    return [{"name": s} for s in symbols[:20]]
+
 
 @app.get("/api/ohlcv")
 async def get_ohlcv(symbol: str, timeframe: str, count: int = 500):
     df = mt5_bridge.get_ohlcv(symbol, timeframe, count)
     if df is None:
         raise HTTPException(status_code=500, detail="Failed to fetch data from MT5")
-    
-    # Convert to JSON serializable format
     data = df.copy()
-    data['time'] = (data['time'].astype(int) // 10**6) # to ms
+    data['time'] = data['time'].astype(int) // 10**6
     return data.to_dict(orient='records')
+
 
 @app.get("/api/analysis")
 async def get_analysis(symbol: str, timeframe: str):
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, 100)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, 200)
     if df is None:
         raise HTTPException(status_code=500, detail="Failed to fetch data for analysis")
-    
     regime = ml_models.detect_regime(df)
     patterns = ml_models.detect_patterns(df)
-    
-    return {
-        "regime": regime,
-        "patterns": patterns
-    }
+    return {"regime": regime, "patterns": patterns}
 
-@app.post("/api/backtest")
-async def run_backtest(strategy: Dict):
-    symbol = strategy.get("symbol", "EURUSD")
-    timeframe = strategy.get("timeframe", "H1")
-    strategy_type = strategy.get("type", "trend")
-    params = strategy.get("parameters", {})
-    
+
+# ──────────────────────────────────────────
+# NEW: Strategy Discovery
+# ──────────────────────────────────────────
+@app.get("/api/strategies")
+async def get_strategies(symbol: str, timeframe: str):
+    """Discover and rank strategies using real MT5 data."""
     df = mt5_bridge.get_ohlcv(symbol, timeframe, 1000)
     if df is None:
-        raise HTTPException(status_code=500, detail="Failed to fetch data for backtest")
-        
-    result = backtest_engine.run_backtest(df, strategy_type, params)
-    return result
+        raise HTTPException(status_code=500, detail="Failed to fetch data")
+    strategies = backtest_engine.discover_strategies(df)
+    return strategies
+
+
+# ──────────────────────────────────────────
+# NEW: Full Validation (WFA + CPCV + MC)
+# ──────────────────────────────────────────
+@app.post("/api/validate")
+async def run_validation(payload: Dict):
+    """Run WFA, CPCV, and Monte Carlo on a strategy."""
+    symbol = payload.get("symbol", "EURUSD")
+    timeframe = payload.get("timeframe", "H1")
+    strategy_type = payload.get("type", "trend")
+    params = payload.get("parameters", {})
+
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, 2000)
+    if df is None:
+        raise HTTPException(status_code=500, detail="Failed to fetch data")
+
+    wfa = backtest_engine.run_wfa(df, strategy_type, params)
+    cpcv = backtest_engine.run_cpcv(df, strategy_type, params)
+    mc = backtest_engine.run_monte_carlo(df, strategy_type, params, n_simulations=5000)
+
+    # PBO approximation from CPCV sharpe variance
+    pbo = min(float(cpcv['sharpeStd'] / (abs(cpcv['avgSharpe']) + 1e-10) * 100), 100)
+
+    return {
+        "wfa": wfa,
+        "cpcv": cpcv,
+        "monteCarlo": mc,
+        "pbo": round(pbo, 1),
+    }
+
+
+# ──────────────────────────────────────────
+# NEW: Backtest with full validation
+# ──────────────────────────────────────────
+@app.post("/api/backtest")
+async def run_backtest(payload: Dict):
+    """Run a full backtest with equity curve."""
+    symbol = payload.get("symbol", "EURUSD")
+    timeframe = payload.get("timeframe", "H1")
+    strategy_type = payload.get("type", "trend")
+    params = payload.get("parameters", {})
+
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, 1000)
+    if df is None:
+        raise HTTPException(status_code=500, detail="Failed to fetch data")
+    return backtest_engine.run_backtest(df, strategy_type, params)
+
+
+# ──────────────────────────────────────────
+# NEW: Recurrence Heatmap (real data)
+# ──────────────────────────────────────────
+@app.get("/api/heatmap")
+async def get_heatmap(symbol: str, timeframe: str):
+    """Compute win rate heatmap by hour/day from real MT5 data."""
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, 2000)
+    if df is None:
+        raise HTTPException(status_code=500, detail="Failed to fetch data")
+    return backtest_engine.compute_heatmap(df)
+
+
+# ──────────────────────────────────────────
+# NEW: ML Feature Importance (real data)
+# ──────────────────────────────────────────
+@app.get("/api/ml-insights")
+async def get_ml_insights(symbol: str, timeframe: str):
+    """Compute ML feature importance and success probability from real data."""
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, 500)
+    if df is None:
+        raise HTTPException(status_code=500, detail="Failed to fetch data")
+    return backtest_engine.compute_feature_importance(df)
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

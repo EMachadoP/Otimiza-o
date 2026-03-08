@@ -22,6 +22,8 @@ export function useTradingData() {
   const [patterns, setPatterns] = useState<Pattern[]>([]);
   const [regime, setRegime] = useState<MarketRegime | null>(null);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [heatmapData, setHeatmapData] = useState<number[][] | null>(null);
+  const [mlInsights, setMlInsights] = useState<{ features: any[]; successProbability: number; explanation: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,27 +41,44 @@ export function useTradingData() {
 
   const fetchData = useCallback(async () => {
     if (!selectedSymbol) return;
-    
     setLoading(true);
     setError(null);
-    
+
     try {
-      // 1. Fetch OHLCV Data
-      const ohlcvResponse = await fetch(`${API_BASE_URL}/ohlcv?symbol=${selectedSymbol.name}&timeframe=${selectedTimeframe.value}`);
-      if (!ohlcvResponse.ok) throw new Error('Failed to fetch OHLCV');
-      const ohlcv = await ohlcvResponse.json();
-      
-      // 2. Fetch Analysis (Regime & Patterns)
-      const analysisResponse = await fetch(`${API_BASE_URL}/analysis?symbol=${selectedSymbol.name}&timeframe=${selectedTimeframe.value}`);
-      if (!analysisResponse.ok) throw new Error('Failed to fetch analysis');
-      const analysis = await analysisResponse.json();
-      
-      setData(ohlcv);
-      setRegime(analysis.regime);
-      setPatterns(analysis.patterns);
-      
-      // Keep mock strategies for now or fetch if available
-      // setStrategies(recommendedStrategies);
+      // Fetch all data in parallel
+      const [ohlcvRes, analysisRes, strategiesRes, heatmapRes, mlRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/ohlcv?symbol=${selectedSymbol.name}&timeframe=${selectedTimeframe.value}`),
+        fetch(`${API_BASE_URL}/analysis?symbol=${selectedSymbol.name}&timeframe=${selectedTimeframe.value}`),
+        fetch(`${API_BASE_URL}/strategies?symbol=${selectedSymbol.name}&timeframe=${selectedTimeframe.value}`),
+        fetch(`${API_BASE_URL}/heatmap?symbol=${selectedSymbol.name}&timeframe=${selectedTimeframe.value}`),
+        fetch(`${API_BASE_URL}/ml-insights?symbol=${selectedSymbol.name}&timeframe=${selectedTimeframe.value}`),
+      ]);
+
+      if (ohlcvRes.ok) {
+        const ohlcv = await ohlcvRes.json();
+        setData(ohlcv);
+      }
+
+      if (analysisRes.ok) {
+        const analysis = await analysisRes.json();
+        setRegime(analysis.regime);
+        setPatterns(analysis.patterns);
+      }
+
+      if (strategiesRes.ok) {
+        const strats = await strategiesRes.json();
+        setStrategies(strats);
+      }
+
+      if (heatmapRes.ok) {
+        const hm = await heatmapRes.json();
+        setHeatmapData(hm);
+      }
+
+      if (mlRes.ok) {
+        const ml = await mlRes.json();
+        setMlInsights(ml);
+      }
     } catch (err) {
       setError('Erro ao conectar com o Backend/MT5. Verifique se o servidor está rodando.');
     } finally {
@@ -84,10 +103,12 @@ export function useTradingData() {
     patterns,
     regime,
     strategies,
+    heatmapData,
+    mlInsights,
     loading,
     error,
     setSelectedSymbol,
     setSelectedTimeframe,
-    refreshData: fetchData
+    refreshData: fetchData,
   };
 }

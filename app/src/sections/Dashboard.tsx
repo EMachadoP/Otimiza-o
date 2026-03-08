@@ -3,12 +3,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { 
-  TrendingUp, 
-  Activity, 
-  BarChart3, 
-  Brain, 
-  Target, 
+import {
+  TrendingUp,
+  Activity,
+  BarChart3,
+  Brain,
+  Target,
   RefreshCw,
   Settings,
   Play,
@@ -39,20 +39,22 @@ export function Dashboard() {
     patterns,
     regime,
     strategies,
+    heatmapData,
+    mlInsights,
     loading,
     setSelectedSymbol,
     setSelectedTimeframe,
     refreshData
   } = useTradingData();
 
-  const { running, progress, runBacktest } = useBacktest();
-  
+  const { running, progress, validation, runBacktest } = useBacktest();
+
   const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(null);
   const [showEAExporter, setShowEAExporter] = useState(false);
   const [showEAImporter, setShowEAImporter] = useState(false);
   const [showOptimizer, setShowOptimizer] = useState(false);
   const [customStrategies, setCustomStrategies] = useState<Strategy[]>([]);
-  
+
   // Combinar estratégias padrão com customizadas
   const allStrategies = [...strategies, ...customStrategies];
 
@@ -69,16 +71,16 @@ export function Dashboard() {
     // Implementar simulação de trade
     console.log('Simulando trade em:', candle);
   };
-  
+
   const handleImportStrategy = (strategy: Strategy) => {
     setCustomStrategies(prev => [...prev, strategy]);
   };
-  
+
   const handleOptimizeStrategy = (strategy: Strategy) => {
     setSelectedStrategy(strategy);
     setShowOptimizer(true);
   };
-  
+
   const handleOptimizedStrategy = (optimizedStrategy: Strategy) => {
     setCustomStrategies(prev => {
       const filtered = prev.filter(s => s.id !== optimizedStrategy.id);
@@ -141,8 +143,8 @@ export function Dashboard() {
         <div className="mb-6 flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-400">Símbolo:</span>
-            <Select 
-              value={selectedSymbol.name} 
+            <Select
+              value={selectedSymbol.name}
               onValueChange={(value) => {
                 const symbol = symbols.find(s => s.name === value);
                 if (symbol) setSelectedSymbol(symbol);
@@ -163,8 +165,8 @@ export function Dashboard() {
 
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-400">Timeframe:</span>
-            <Select 
-              value={selectedTimeframe.value} 
+            <Select
+              value={selectedTimeframe.value}
               onValueChange={(value) => {
                 const tf = timeframes.find(t => t.value === value);
                 if (tf) setSelectedTimeframe(tf);
@@ -215,8 +217,8 @@ export function Dashboard() {
             </Select>
           </div>
 
-          <Button 
-            onClick={refreshData} 
+          <Button
+            onClick={refreshData}
             disabled={loading}
             className="bg-blue-600 hover:bg-blue-700"
           >
@@ -258,8 +260,8 @@ export function Dashboard() {
                     </div>
                   </div>
                 ) : (
-                  <CandlestickChart 
-                    data={data} 
+                  <CandlestickChart
+                    data={data}
                     patterns={patterns}
                     regime={regime}
                     height={500}
@@ -278,8 +280,8 @@ export function Dashboard() {
                     Melhores Estratégias Agora
                   </CardTitle>
                   <div className="flex gap-2">
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       size="sm"
                       onClick={() => setShowEAImporter(true)}
                       className="border-slate-700"
@@ -287,8 +289,8 @@ export function Dashboard() {
                       <Upload className="h-4 w-4 mr-2" />
                       Importar EA
                     </Button>
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       size="sm"
                       onClick={() => {
                         allStrategies.forEach(s => runBacktest(s, selectedSymbol.name, selectedTimeframe.value));
@@ -303,7 +305,7 @@ export function Dashboard() {
                 </div>
               </CardHeader>
               <CardContent>
-                <StrategyTable 
+                <StrategyTable
                   strategies={allStrategies}
                   onViewDetails={handleViewDetails}
                   onExportEA={handleExportEA}
@@ -321,7 +323,8 @@ export function Dashboard() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <ValidationPanel 
+                <ValidationPanel
+                  validation={validation || undefined}
                   isRunning={running}
                   progress={progress}
                   onRunValidation={() => {
@@ -400,7 +403,7 @@ export function Dashboard() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <RecurrenceHeatmap />
+                <RecurrenceHeatmap data={heatmapData || undefined} />
               </CardContent>
             </Card>
 
@@ -413,7 +416,11 @@ export function Dashboard() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <MLInsights />
+                <MLInsights
+                  features={mlInsights?.features}
+                  successProbability={mlInsights?.successProbability}
+                  explanation={mlInsights?.explanation}
+                />
               </CardContent>
             </Card>
           </div>
@@ -421,21 +428,21 @@ export function Dashboard() {
       </main>
 
       {/* EA Exporter Dialog */}
-      <EAExporter 
+      <EAExporter
         strategy={selectedStrategy}
         open={showEAExporter}
         onOpenChange={setShowEAExporter}
       />
-      
+
       {/* EA Importer Dialog */}
-      <EAImporter 
+      <EAImporter
         open={showEAImporter}
         onOpenChange={setShowEAImporter}
         onImport={handleImportStrategy}
       />
-      
+
       {/* Strategy Optimizer Dialog */}
-      <StrategyOptimizer 
+      <StrategyOptimizer
         strategy={selectedStrategy}
         open={showOptimizer}
         onOpenChange={setShowOptimizer}

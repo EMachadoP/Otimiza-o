@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react';
-import type { BacktestResult, Strategy } from '@/types/trading';
+import type { BacktestResult, Strategy, ValidationResults } from '@/types/trading';
 
 const API_BASE_URL = 'http://localhost:8000/api';
 
 export function useBacktest() {
   const [backtestResults, setBacktestResults] = useState<BacktestResult[]>([]);
+  const [validation, setValidation] = useState<ValidationResults | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
 
@@ -13,42 +14,62 @@ export function useBacktest() {
     setProgress(0);
 
     try {
-      // Fake progress for visual feedback
       const progressInterval = setInterval(() => {
-        setProgress(prev => (prev < 90 ? prev + 10 : prev));
-      }, 500);
+        setProgress(prev => (prev < 90 ? prev + 5 : prev));
+      }, 300);
 
-      const response = await fetch(`${API_BASE_URL}/backtest`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...strategy,
-          symbol,
-          timeframe
-        })
-      });
+      // Run backtest and validation in parallel
+      const [btRes, valRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/backtest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...strategy, symbol, timeframe }),
+        }),
+        fetch(`${API_BASE_URL}/validate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...strategy, symbol, timeframe }),
+        }),
+      ]);
 
       clearInterval(progressInterval);
       setProgress(100);
 
-      if (!response.ok) throw new Error('Backtest failed');
-      const result = await response.json();
+      let btResult = null;
+      let valResult = null;
 
-      const fullResult: BacktestResult = {
-        ...result,
-        strategyId: strategy.id,
-        symbol,
-        timeframe,
-        manifest: {
-          timestamp: new Date().toISOString(),
-          configuration: { strategy, symbol, timeframe }
-        }
-      };
+      if (btRes.ok) btResult = await btRes.json();
+      if (valRes.ok) valResult = await valRes.json();
 
-      setBacktestResults(prev => [...prev, fullResult]);
-      return fullResult;
+      if (valResult) {
+        setValidation(valResult);
+      }
+
+      if (btResult) {
+        const fullResult: BacktestResult = {
+          ...btResult,
+          strategyId: strategy.id,
+          symbol,
+          timeframe,
+          period: { start: 'auto', end: 'auto' },
+          trades: [],
+          validation: valResult || btResult.validation,
+          manifest: {
+            seed: 42,
+            datasetHash: 'real-mt5',
+            codeHash: 'live',
+            branch: 'main',
+            pythonVersion: '3.13',
+            dependenciesHash: 'live',
+            timestamp: new Date().toISOString(),
+            configuration: { strategy, symbol, timeframe },
+          },
+        };
+        setBacktestResults(prev => [...prev, fullResult]);
+        return fullResult;
+      }
     } catch (err) {
-      console.error('Backtest error', err);
+      console.error('Backtest/validation error', err);
     } finally {
       setRunning(false);
       setProgress(0);
@@ -66,14 +87,16 @@ export function useBacktest() {
 
   const clearResults = useCallback(() => {
     setBacktestResults([]);
+    setValidation(null);
   }, []);
 
   return {
     backtestResults,
+    validation,
     running,
     progress,
     runBacktest,
     runBatchBacktest,
-    clearResults
+    clearResults,
   };
 }

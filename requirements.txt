@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+MetaTrader5
+pandas
+numpy
+scikit-learn
+hmmlearn
+xgboost
+pydantic-settings
