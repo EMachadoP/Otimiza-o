@@ -11,6 +11,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from core.mt5_bridge import mt5_bridge
 from core.ml_models import ml_models
 from core.backtest_engine import backtest_engine
+from core.optimizer import ParameterOptimizer
+
+parameter_optimizer = ParameterOptimizer(backtest_engine)
 
 
 @asynccontextmanager
@@ -24,7 +27,7 @@ app = FastAPI(title="TradeStrategist API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -59,8 +62,8 @@ async def get_symbols():
 @app.get("/api/ohlcv")
 async def get_ohlcv(symbol: str, timeframe: str, count: int = 500):
     df = mt5_bridge.get_ohlcv(symbol, timeframe, count)
-    if df is None:
-        raise HTTPException(status_code=500, detail="Failed to fetch data from MT5")
+    if df is None or df.empty:
+        return [] # Return empty list instead of 500 to keep frontend alive
     data = df.copy()
     data['time'] = data['time'].astype(int) // 10**6
     return data.to_dict(orient='records')
@@ -69,11 +72,16 @@ async def get_ohlcv(symbol: str, timeframe: str, count: int = 500):
 @app.get("/api/analysis")
 async def get_analysis(symbol: str, timeframe: str):
     df = mt5_bridge.get_ohlcv(symbol, timeframe, 200)
-    if df is None:
-        raise HTTPException(status_code=500, detail="Failed to fetch data for analysis")
+    if df is None or df.empty:
+        return {
+            "regime": {"type": "undefined", "confidence": 0, "indicators": {}}, 
+            "patterns": [],
+            "recommendation": {"strategy": "N/A", "reason": "Sem dados", "confidence": 0}
+        }
     regime = ml_models.detect_regime(df)
     patterns = ml_models.detect_patterns(df)
-    return {"regime": regime, "patterns": patterns}
+    recommendation = ml_models.get_recommendation(regime.get("type", "undefined"))
+    return {"regime": regime, "patterns": patterns, "recommendation": recommendation}
 
 
 # ──────────────────────────────────────────
@@ -83,8 +91,8 @@ async def get_analysis(symbol: str, timeframe: str):
 async def get_strategies(symbol: str, timeframe: str):
     """Discover and rank strategies using real MT5 data."""
     df = mt5_bridge.get_ohlcv(symbol, timeframe, 1000)
-    if df is None:
-        raise HTTPException(status_code=500, detail="Failed to fetch data")
+    if df is None or df.empty:
+        return []
     strategies = backtest_engine.discover_strategies(df)
     return strategies
 
@@ -131,8 +139,8 @@ async def run_backtest(payload: Dict):
     params = payload.get("parameters", {})
 
     df = mt5_bridge.get_ohlcv(symbol, timeframe, 1000)
-    if df is None:
-        raise HTTPException(status_code=500, detail="Failed to fetch data")
+    if df is None or df.empty:
+        return {"equity": [], "metrics": {}, "trades": []}
     return backtest_engine.run_backtest(df, strategy_type, params)
 
 
@@ -143,8 +151,8 @@ async def run_backtest(payload: Dict):
 async def get_heatmap(symbol: str, timeframe: str):
     """Compute win rate heatmap by hour/day from real MT5 data."""
     df = mt5_bridge.get_ohlcv(symbol, timeframe, 2000)
-    if df is None:
-        raise HTTPException(status_code=500, detail="Failed to fetch data")
+    if df is None or df.empty:
+        return [[0]*24 for _ in range(5)] # 5 days x 24 hours
     return backtest_engine.compute_heatmap(df)
 
 
@@ -155,9 +163,38 @@ async def get_heatmap(symbol: str, timeframe: str):
 async def get_ml_insights(symbol: str, timeframe: str):
     """Compute ML feature importance and success probability from real data."""
     df = mt5_bridge.get_ohlcv(symbol, timeframe, 500)
-    if df is None:
-        raise HTTPException(status_code=500, detail="Failed to fetch data")
+    if df is None or df.empty:
+        return {
+            "features": [],
+            "successProbability": 0,
+            "explanation": "Dados insuficientes no MT5 para este símbolo/timeframe."
+        }
     return backtest_engine.compute_feature_importance(df)
+
+
+# ──────────────────────────────────────────
+# NEW: Real Parameter Optimization
+# ──────────────────────────────────────────
+@app.post("/api/optimize")
+async def run_optimization(payload: Dict):
+    """Run grid-search parameter optimization with real WFA validation."""
+    symbol = payload.get("symbol", "EURUSD")
+    timeframe = payload.get("timeframe", "H1")
+    strategy_type = payload.get("type", "trend")
+    param_ranges = payload.get("paramRanges", {})
+    criteria = payload.get("criteria", "sharpe")
+
+    if not param_ranges:
+        raise HTTPException(status_code=400, detail="paramRanges is required")
+
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, 2000)
+    if df is None or df.empty:
+        raise HTTPException(status_code=500, detail="Failed to fetch data from MT5")
+
+    result = parameter_optimizer.optimize_strategy(
+        df, strategy_type, param_ranges, criteria
+    )
+    return result
 
 
 if __name__ == "__main__":

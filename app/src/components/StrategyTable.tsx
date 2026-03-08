@@ -42,10 +42,10 @@ const statusLabels: Record<string, string> = {
   rejected: 'Rejeitada'
 };
 
-export function StrategyTable({ 
-  strategies, 
-  onViewDetails, 
-  onExportEA, 
+export function StrategyTable({
+  strategies,
+  onViewDetails,
+  onExportEA,
   onGenerateParams,
   onOptimize
 }: StrategyTableProps) {
@@ -87,8 +87,8 @@ export function StrategyTable({
           </thead>
           <tbody>
             {strategies.map((strategy, index) => (
-              <tr 
-                key={strategy.id} 
+              <tr
+                key={strategy.id}
                 className="border-b border-slate-800 hover:bg-slate-800/50 transition-colors"
               >
                 <td className="py-3 px-4">
@@ -111,18 +111,18 @@ export function StrategyTable({
                   </Badge>
                 </td>
                 <td className="py-3 px-4 text-right">
-                  <span className={cn('font-mono font-semibold', getMetricColor(strategy.metrics.wfe))}>
-                    {(strategy.metrics.wfe * 100).toFixed(0)}%
+                  <span className={cn('font-mono font-semibold', getMetricColor(strategy.metrics?.wfe ?? 0))}>
+                    {((strategy.metrics?.wfe ?? 0) * 100).toFixed(0)}%
                   </span>
                 </td>
                 <td className="py-3 px-4 text-right">
-                  <span className={cn('font-mono font-semibold', getMetricColor(strategy.metrics.sharpeOOS / 2))}>
-                    {strategy.metrics.sharpeOOS.toFixed(2)}
+                  <span className={cn('font-mono font-semibold', getMetricColor((strategy.metrics?.sharpeOOS ?? 0) / 2))}>
+                    {(strategy.metrics?.sharpeOOS ?? 0).toFixed(2)}
                   </span>
                 </td>
                 <td className="py-3 px-4 text-right">
-                  <span className={cn('font-mono font-semibold', getMetricColor(strategy.metrics.maxDrawdownMC, 'bad'))}>
-                    {strategy.metrics.maxDrawdownMC.toFixed(1)}%
+                  <span className={cn('font-mono font-semibold', getMetricColor(strategy.metrics?.maxDrawdownMC ?? 0, 'bad'))}>
+                    {(strategy.metrics?.maxDrawdownMC ?? 0).toFixed(1)}%
                   </span>
                 </td>
                 <td className="py-3 px-4 text-center">
@@ -187,7 +187,7 @@ export function StrategyTable({
               </Badge>
             </DialogTitle>
           </DialogHeader>
-          
+
           {selectedStrategy && (
             <div className="space-y-6">
               {/* Métricas principais */}
@@ -197,41 +197,41 @@ export function StrategyTable({
                     <TrendingUp className="h-4 w-4" />
                     WFE
                   </div>
-                  <div className={cn('text-2xl font-bold font-mono', getMetricColor(selectedStrategy.metrics.wfe))}>
-                    {(selectedStrategy.metrics.wfe * 100).toFixed(0)}%
+                  <div className={cn('text-2xl font-bold font-mono', getMetricColor(selectedStrategy.metrics?.wfe ?? 0))}>
+                    {((selectedStrategy.metrics?.wfe ?? 0) * 100).toFixed(0)}%
                   </div>
                   <div className="text-xs text-slate-500">Walk-Forward Efficiency</div>
                 </div>
-                
+
                 <div className="bg-slate-800 rounded-lg p-4">
                   <div className="flex items-center gap-2 text-slate-400 text-sm mb-1">
                     <Activity className="h-4 w-4" />
                     Sharpe OOS
                   </div>
-                  <div className={cn('text-2xl font-bold font-mono', getMetricColor(selectedStrategy.metrics.sharpeOOS / 2))}>
-                    {selectedStrategy.metrics.sharpeOOS.toFixed(2)}
+                  <div className={cn('text-2xl font-bold font-mono', getMetricColor((selectedStrategy.metrics?.sharpeOOS ?? 0) / 2))}>
+                    {(selectedStrategy.metrics?.sharpeOOS ?? 0).toFixed(2)}
                   </div>
                   <div className="text-xs text-slate-500">Out-of-Sample</div>
                 </div>
-                
+
                 <div className="bg-slate-800 rounded-lg p-4">
                   <div className="flex items-center gap-2 text-slate-400 text-sm mb-1">
                     <TrendingDown className="h-4 w-4" />
                     Max DD
                   </div>
-                  <div className={cn('text-2xl font-bold font-mono', getMetricColor(selectedStrategy.metrics.maxDrawdownMC, 'bad'))}>
-                    {selectedStrategy.metrics.maxDrawdownMC.toFixed(1)}%
+                  <div className={cn('text-2xl font-bold font-mono', getMetricColor(selectedStrategy.metrics?.maxDrawdownMC ?? 0, 'bad'))}>
+                    {(selectedStrategy.metrics?.maxDrawdownMC ?? 0).toFixed(1)}%
                   </div>
                   <div className="text-xs text-slate-500">Monte Carlo P95</div>
                 </div>
-                
+
                 <div className="bg-slate-800 rounded-lg p-4">
                   <div className="flex items-center gap-2 text-slate-400 text-sm mb-1">
                     <Target className="h-4 w-4" />
                     Win Rate
                   </div>
                   <div className="text-2xl font-bold font-mono text-emerald-400">
-                    {selectedStrategy.metrics.winRate}%
+                    {selectedStrategy.metrics?.winRate ?? 0}%
                   </div>
                   <div className="text-xs text-slate-500">Taxa de acerto</div>
                 </div>
@@ -244,47 +244,47 @@ export function StrategyTable({
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className="text-slate-500">Profit Factor:</span>
-                      <span className="font-mono text-slate-200">{selectedStrategy.metrics.profitFactor.toFixed(2)}</span>
+                      <span className="font-mono text-slate-200">{(selectedStrategy.metrics?.profitFactor ?? 0).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Expectancy:</span>
-                      <span className="font-mono text-slate-200">{selectedStrategy.metrics.expectancy.toFixed(2)}</span>
+                      <span className="font-mono text-slate-200">{(selectedStrategy.metrics?.expectancy ?? 0).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Avg Trade:</span>
-                      <span className="font-mono text-slate-200">${selectedStrategy.metrics.avgTrade}</span>
+                      <span className="font-mono text-slate-200">${selectedStrategy.metrics?.avgTrade ?? 0}</span>
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="bg-slate-800/50 rounded-lg p-4">
                   <div className="text-slate-400 text-sm mb-2">Risco</div>
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className="text-slate-500">Max DD (Real):</span>
-                      <span className="font-mono text-slate-200">{selectedStrategy.metrics.maxDrawdown.toFixed(1)}%</span>
+                      <span className="font-mono text-slate-200">{(selectedStrategy.metrics?.maxDrawdown ?? 0).toFixed(1)}%</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Calmar Ratio:</span>
-                      <span className="font-mono text-slate-200">{selectedStrategy.metrics.calmarRatio.toFixed(2)}</span>
+                      <span className="font-mono text-slate-200">{(selectedStrategy.metrics?.calmarRatio ?? 0).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Sortino:</span>
-                      <span className="font-mono text-slate-200">{selectedStrategy.metrics.sortinoRatio.toFixed(2)}</span>
+                      <span className="font-mono text-slate-200">{(selectedStrategy.metrics?.sortinoRatio ?? 0).toFixed(2)}</span>
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="bg-slate-800/50 rounded-lg p-4">
                   <div className="text-slate-400 text-sm mb-2">Estatísticas</div>
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className="text-slate-500">Total Trades:</span>
-                      <span className="font-mono text-slate-200">{selectedStrategy.metrics.totalTrades}</span>
+                      <span className="font-mono text-slate-200">{selectedStrategy.metrics?.totalTrades ?? 0}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Sharpe IS:</span>
-                      <span className="font-mono text-slate-200">{selectedStrategy.metrics.sharpeIS.toFixed(2)}</span>
+                      <span className="font-mono text-slate-200">{(selectedStrategy.metrics?.sharpeIS ?? 0).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Status:</span>

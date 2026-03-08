@@ -13,6 +13,7 @@ interface MLInsightsProps {
   features?: FeatureImportance[];
   successProbability?: number;
   explanation?: string;
+  recommendation?: { strategy: string; reason: string; confidence: number } | null;
 }
 
 const defaultFeatures: FeatureImportance[] = [
@@ -23,10 +24,11 @@ const defaultFeatures: FeatureImportance[] = [
   { feature: 'MACD', importance: 48, description: 'Convergência/Divergência de Médias' },
 ];
 
-export function MLInsights({ 
-  features = defaultFeatures, 
+export function MLInsights({
+  features = defaultFeatures,
   successProbability = 78,
-  explanation = 'O mercado está em uma tendência de alta com volume crescente. A estratégia TrendBreak tem 72% de acerto em condições similares.'
+  explanation = 'O mercado está em uma tendência de alta com volume crescente.',
+  recommendation
 }: MLInsightsProps) {
   const [expandedFeature, setExpandedFeature] = useState<string | null>(null);
 
@@ -46,6 +48,27 @@ export function MLInsights({
 
   return (
     <div className="space-y-6">
+      {/* Quick Recommendation */}
+      {recommendation && (
+        <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-blue-400">
+              <Sparkles className="h-4 w-4" />
+              <span className="text-xs font-bold uppercase tracking-wider">Recomendação Rápida</span>
+            </div>
+            <Badge variant="outline" className="text-[10px] border-blue-500/30 text-blue-400">
+              {recommendation.confidence}% CONFIDANÇA
+            </Badge>
+          </div>
+          <div className="text-sm font-bold text-white">
+            {recommendation.strategy}
+          </div>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            {recommendation.reason}
+          </p>
+        </div>
+      )}
+
       {/* Feature Importance */}
       <div className="space-y-3">
         <div className="flex items-center gap-2">
@@ -54,10 +77,10 @@ export function MLInsights({
             Feature Importance
           </h3>
         </div>
-        
+
         <div className="space-y-2">
           {features.map((feat) => (
-            <div 
+            <div
               key={feat.feature}
               className="space-y-1"
               onMouseEnter={() => setExpandedFeature(feat.feature)}
@@ -73,12 +96,12 @@ export function MLInsights({
                 <span className="text-slate-400 font-mono">{feat.importance}%</span>
               </div>
               <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-                <div 
+                <div
                   className={cn(
                     'h-full rounded-full transition-all duration-500',
                     feat.importance >= 80 ? 'bg-emerald-500' :
-                    feat.importance >= 60 ? 'bg-blue-500' :
-                    feat.importance >= 40 ? 'bg-amber-500' : 'bg-slate-500'
+                      feat.importance >= 60 ? 'bg-blue-500' :
+                        feat.importance >= 40 ? 'bg-amber-500' : 'bg-slate-500'
                   )}
                   style={{ width: `${feat.importance}%` }}
                 />
@@ -96,7 +119,7 @@ export function MLInsights({
             Probabilidade de Sucesso
           </h3>
         </div>
-        
+
         <div className="bg-slate-800/50 rounded-lg p-4">
           <div className="flex items-center justify-center">
             <div className="relative w-32 h-32">
@@ -124,7 +147,7 @@ export function MLInsights({
                   className={cn('transition-all duration-1000', getProbabilityColor(successProbability))}
                 />
               </svg>
-              
+
               {/* Valor central */}
               <div className="absolute inset-0 flex flex-col items-center justify-center">
                 <span className={cn('text-3xl font-bold font-mono', getProbabilityColor(successProbability))}>
@@ -136,7 +159,7 @@ export function MLInsights({
               </div>
             </div>
           </div>
-          
+
           <div className="mt-4 text-center text-xs text-slate-500">
             Probabilidade baseada no regime atual e condições similares históricas
           </div>
@@ -151,7 +174,7 @@ export function MLInsights({
             Análise Gerada
           </h3>
         </div>
-        
+
         <div className="bg-slate-800/50 rounded-lg p-4 border-l-4 border-blue-500">
           <div className="flex items-start gap-3">
             <Brain className="h-5 w-5 text-blue-400 mt-0.5 flex-shrink-0" />

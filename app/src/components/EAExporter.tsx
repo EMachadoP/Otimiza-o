@@ -20,7 +20,7 @@ export function EAExporter({ strategy, open, onOpenChange }: EAExporterProps) {
 
   const generateMQLCode = (strat: Strategy, ver: 'mql4' | 'mql5'): string => {
     const isMQL5 = ver === 'mql5';
-    
+
     return `//+------------------------------------------------------------------+
 //|                                      ${strat.name.replace(/\s+/g, '_')}.${ver === 'mql5' ? 'mq5' : 'mq4'}
 //|                        TradeStrategist Auto-Generated EA
@@ -39,9 +39,11 @@ input int      InpTakeProfit = 100;     // Take Profit (pips)
 input int      InpMagicNumber = ${Math.floor(Math.random() * 90000) + 10000};  // Magic Number
 
 input group "=== Strategy Parameters ==="
-${Object.entries(strat.parameters).map(([key, value]) => 
-  `input int      Inp${key.charAt(0).toUpperCase() + key.slice(1)} = ${value};        // ${key}`
-).join('\n')}
+${Object.entries(strat.parameters).map(([key, value]) => {
+      const type = key.toLowerCase().includes('std') ? 'double' : 'int';
+      const name = `Inp${key.charAt(0).toUpperCase() + key.slice(1)}`;
+      return `input ${type.padEnd(8)} ${name} = ${value}${type === 'double' && String(value).indexOf('.') === -1 ? '.0' : ''};        // ${key}`;
+    }).join('\n')}
 
 input group "=== Risk Management ==="
 input double   InpMaxRiskPercent = 2.0;  // Max Risk per Trade (%)
@@ -109,23 +111,44 @@ void OnTick()
 //+------------------------------------------------------------------+
 int CheckEntrySignal()
 {
-   // Calculate indicators
-   double emaFast = iMA(Symbol(), PERIOD_CURRENT, InpFastEma, 0, MODE_EMA, PRICE_CLOSE, 0);
-   double emaSlow = iMA(Symbol(), PERIOD_CURRENT, InpSlowEma, 0, MODE_EMA, PRICE_CLOSE, 0);
-   double emaFastPrev = iMA(Symbol(), PERIOD_CURRENT, InpFastEma, 0, MODE_EMA, PRICE_CLOSE, 1);
-   double emaSlowPrev = iMA(Symbol(), PERIOD_CURRENT, InpSlowEma, 0, MODE_EMA, PRICE_CLOSE, 1);
+${strat.type === 'trend' ? `
+   // EMA Crossover Logic
+   double emaFast = iMA(Symbol(), PERIOD_CURRENT, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double emaSlow = iMA(Symbol(), PERIOD_CURRENT, InpSlowEMA, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double emaFastPrev = iMA(Symbol(), PERIOD_CURRENT, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double emaSlowPrev = iMA(Symbol(), PERIOD_CURRENT, InpSlowEMA, 0, MODE_EMA, PRICE_CLOSE, 1);
    
-   // Trend following logic
-   if(emaFast > emaSlow && emaFastPrev <= emaSlowPrev)
-   {
-      return 1; // Buy signal
-   }
-   else if(emaFast < emaSlow && emaFastPrev >= emaSlowPrev)
-   {
-      return -1; // Sell signal
-   }
+   if(emaFast > emaSlow && emaFastPrev <= emaSlowPrev) return 1;
+   if(emaFast < emaSlow && emaFastPrev >= emaSlowPrev) return -1;
+` : strat.type === 'reversal' ? `
+   // RSI Reversal Logic
+   double rsi = iRSI(Symbol(), PERIOD_CURRENT, InpRsiPeriod, PRICE_CLOSE, 0);
+   if(rsi < InpOversold) return 1;
+   if(rsi > InpOverbought) return -1;
+` : strat.type === 'breakout' ? `
+   // Bollinger Bands Breakout Logic
+   double upper = iBands(Symbol(), PERIOD_CURRENT, InpBbPeriod, InpBbStd, 0, PRICE_CLOSE, MODE_UPPER, 0);
+   double lower = iBands(Symbol(), PERIOD_CURRENT, InpBbPeriod, InpBbStd, 0, PRICE_CLOSE, MODE_LOWER, 0);
+   double close = iClose(Symbol(), PERIOD_CURRENT, 0);
    
-   return 0; // No signal
+   if(close > upper) return 1;
+   if(close < lower) return -1;
+` : strat.type === 'scalping' ? `
+   // Scalper Momentum Logic (EMA + RSI)
+   double emaFast = iMA(Symbol(), PERIOD_CURRENT, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double emaSlow = iMA(Symbol(), PERIOD_CURRENT, InpSlowEMA, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double rsi = iRSI(Symbol(), PERIOD_CURRENT, InpRsiPeriod, PRICE_CLOSE, 0);
+   
+   if(emaFast > emaSlow && rsi > 50 && rsi < 80) return 1;
+   if(emaFast < emaSlow && rsi < 50 && rsi > 20) return -1;
+` : `
+   // Default Crossover
+   double ema9 = iMA(Symbol(), PERIOD_CURRENT, 9, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double ema21 = iMA(Symbol(), PERIOD_CURRENT, 21, 0, MODE_EMA, PRICE_CLOSE, 0);
+   if(ema9 > ema21) return 1;
+   return 0;
+`}
+   return 0;
 }
 
 //+------------------------------------------------------------------+
@@ -431,8 +454,8 @@ filters:
           {/* MQL Tab */}
           <TabsContent value="mql" className="space-y-4">
             <div className="flex items-center justify-between">
-              <select 
-                value={version} 
+              <select
+                value={version}
                 onChange={(e) => setVersion(e.target.value as 'mql4' | 'mql5')}
                 className="w-32 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
               >

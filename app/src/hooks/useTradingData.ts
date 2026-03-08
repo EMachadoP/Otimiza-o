@@ -31,6 +31,7 @@ export function useTradingData() {
   const [data, setData] = useState<OHLCV[]>([]);
   const [patterns, setPatterns] = useState<Pattern[]>([]);
   const [regime, setRegime] = useState<MarketRegime | null>(null);
+  const [recommendation, setRecommendation] = useState<{ strategy: string; reason: string; confidence: number } | null>(null);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [heatmapData, setHeatmapData] = useState<number[][] | null>(null);
   const [mlInsights, setMlInsights] = useState<{
@@ -60,9 +61,9 @@ export function useTradingData() {
       // Fetch all data in parallel — each request is independent and won't crash if one fails
       const [ohlcv, analysis, strats, hm, ml] = await Promise.all([
         safeFetch<OHLCV[]>(`${API_BASE_URL}/ohlcv?symbol=${sym}&timeframe=${tf}`, []),
-        safeFetch<{ regime: MarketRegime | null; patterns: Pattern[] }>(
+        safeFetch<{ regime: MarketRegime | null; patterns: Pattern[]; recommendation: any }>(
           `${API_BASE_URL}/analysis?symbol=${sym}&timeframe=${tf}`,
-          { regime: null, patterns: [] }
+          { regime: null, patterns: [], recommendation: null }
         ),
         safeFetch<Strategy[]>(`${API_BASE_URL}/strategies?symbol=${sym}&timeframe=${tf}`, []),
         safeFetch<number[][]>(`${API_BASE_URL}/heatmap?symbol=${sym}&timeframe=${tf}`, []),
@@ -75,6 +76,7 @@ export function useTradingData() {
       if (ohlcv.length > 0) setData(ohlcv);
       setRegime(analysis.regime);
       setPatterns(analysis.patterns || []);
+      setRecommendation(analysis.recommendation);
       setStrategies(strats);
       if (hm.length > 0) setHeatmapData(hm);
       setMlInsights(ml);
@@ -105,6 +107,7 @@ export function useTradingData() {
     data,
     patterns,
     regime,
+    recommendation,
     strategies,
     heatmapData,
     mlInsights,

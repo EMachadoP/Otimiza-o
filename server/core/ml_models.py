@@ -129,6 +129,7 @@ class MLModels:
         """Detect geometric and candlestick patterns."""
         patterns = []
         try:
+            # Candlestick Patterns
             last_candle = df.iloc[-1]
             body = abs(last_candle['open'] - last_candle['close'])
             upper_wick = last_candle['high'] - max(last_candle['open'], last_candle['close'])
@@ -136,45 +137,68 @@ class MLModels:
 
             if lower_wick > body * 2:
                 patterns.append({
-                    "id": "pat_1",
-                    "type": "candlestick",
-                    "name": "Pin Bar Alta",
+                    "id": "pat_1", "type": "candlestick", "name": "Pin Bar Alta",
                     "timestamp": int(last_candle['time'].timestamp() * 1000),
-                    "direction": "up",
-                    "frequency": 1,
-                    "accuracy": 82,
+                    "direction": "up", "frequency": 1, "accuracy": 82,
                 })
 
             if upper_wick > body * 2:
                 patterns.append({
-                    "id": "pat_2",
-                    "type": "candlestick",
-                    "name": "Pin Bar Baixa",
+                    "id": "pat_2", "type": "candlestick", "name": "Pin Bar Baixa",
                     "timestamp": int(last_candle['time'].timestamp() * 1000),
-                    "direction": "down",
-                    "frequency": 1,
-                    "accuracy": 78,
+                    "direction": "down", "frequency": 1, "accuracy": 78,
                 })
 
-            # Engulfing
-            if len(df) >= 2:
-                prev = df.iloc[-2]
-                curr = df.iloc[-1]
-                if curr['close'] > curr['open'] and prev['close'] < prev['open']:
-                    if curr['close'] > prev['open'] and curr['open'] < prev['close']:
+            # Geometric Patterns (Support / Resistance)
+            window = 20
+            if len(df) > window * 2:
+                df_slice = df.tail(window * 2)
+                for i in range(window, len(df_slice) - window):
+                    center_high = df_slice.iloc[i]['high']
+                    center_low = df_slice.iloc[i]['low']
+                    if all(center_high >= df_slice.iloc[i-j]['high'] for j in range(1, 3)) and \
+                       all(center_high >= df_slice.iloc[i+j]['high'] for j in range(1, 3)):
                         patterns.append({
-                            "id": "pat_3",
-                            "type": "candlestick",
-                            "name": "Engulfing Alta",
-                            "timestamp": int(curr['time'].timestamp() * 1000),
-                            "direction": "up",
-                            "frequency": 1,
-                            "accuracy": 75,
+                            "id": f"geo_res_{i}", "type": "geometric", "name": "Resistência Local",
+                            "timestamp": int(df_slice.iloc[i]['time'].timestamp() * 1000),
+                            "direction": "down", "frequency": 1, "accuracy": 70,
+                        })
+                    if all(center_low <= df_slice.iloc[i-j]['low'] for j in range(1, 3)) and \
+                       all(center_low <= df_slice.iloc[i+j]['low'] for j in range(1, 3)):
+                        patterns.append({
+                            "id": f"geo_sup_{i}", "type": "geometric", "name": "Suporte Local",
+                            "timestamp": int(df_slice.iloc[i]['time'].timestamp() * 1000),
+                            "direction": "up", "frequency": 1, "accuracy": 72,
                         })
         except Exception as e:
             logger.error(f"Error in detect_patterns: {e}")
 
-        return patterns
+        return patterns[-5:]
+
+    def get_recommendation(self, regime_type: str) -> Dict:
+        """Get a quick strategy recommendation based on market regime."""
+        recommendations = {
+            "trend_up": {
+                "strategy": "EMA Crossover",
+                "reason": "O mercado está em tendência de alta clara. Estratégias de cruzamento tendem a performar melhor aqui.",
+                "confidence": 85
+            },
+            "trend_down": {
+                "strategy": "EMA Crossover / Bollinger",
+                "reason": "Tendência de baixa detectada. Cruzamentos ou rompimentos de volatilidade são ideais.",
+                "confidence": 82
+            },
+            "range": {
+                "strategy": "RSI Reversal",
+                "reason": "Mercado lateralizado. Estratégias de reversão à média (oversold/overbought) têm maior probabilidade.",
+                "confidence": 78
+            }
+        }
+        return recommendations.get(regime_type, {
+            "strategy": "Aguardar Confirmação",
+            "reason": "Regime incerto. Recomenda-se aguardar uma definição clara de tendência ou volatilidade.",
+            "confidence": 50
+        })
 
 
 ml_models = MLModels()

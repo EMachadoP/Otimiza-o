@@ -59,10 +59,20 @@ class MT5Bridge:
         
         mt5_tf = tf_map.get(timeframe, mt5.TIMEFRAME_H1)
         
+        # Try exact symbol first
         rates = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, count)
+        
+        # Fallback: try to find symbol with suffix if not found (e.g. EURUSD -> EURUSDm)
         if rates is None:
-            logger.error(f"Failed to copy rates for {symbol}, error = {mt5.last_error()}")
-            return None
+            all_symbols = [s.name for s in mt5.symbols_get() or []]
+            matches = [s for s in all_symbols if s.startswith(symbol)]
+            if matches:
+                logger.info(f"Symbol {symbol} not found, trying with suffix: {matches[0]}")
+                rates = mt5.copy_rates_from_pos(matches[0], mt5_tf, 0, count)
+
+        if rates is None or len(rates) == 0:
+            logger.warning(f"No data for {symbol}, error = {mt5.last_error()}")
+            return pd.DataFrame() # Return empty DF instead of None to prevent 500s
             
         df = pd.DataFrame(rates)
         df['time'] = pd.to_datetime(df['time'], unit='s')

@@ -38,6 +38,7 @@ export function Dashboard() {
     data,
     patterns,
     regime,
+    recommendation,
     strategies,
     heatmapData,
     mlInsights,
@@ -87,6 +88,7 @@ export function Dashboard() {
       const filtered = prev.filter(s => s.id !== optimizedStrategy.id);
       return [...filtered, optimizedStrategy];
     });
+    setSelectedStrategy(optimizedStrategy);
   };
 
   const regimeLabels: Record<string, string> = {
@@ -436,6 +438,7 @@ export function Dashboard() {
                   features={mlInsights?.features}
                   successProbability={mlInsights?.successProbability}
                   explanation={mlInsights?.explanation}
+                  recommendation={recommendation}
                 />
               </CardContent>
             </Card>
@@ -460,10 +463,13 @@ export function Dashboard() {
       {/* Strategy Optimizer Dialog */}
       <StrategyOptimizer
         strategy={selectedStrategy}
+        symbol={selectedSymbol}
+        timeframe={selectedTimeframe}
         open={showOptimizer}
         onOpenChange={setShowOptimizer}
         onOptimized={handleOptimizedStrategy}
       />
+
     </div>
   );
 }

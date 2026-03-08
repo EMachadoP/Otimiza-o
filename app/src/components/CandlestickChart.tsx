@@ -10,13 +10,13 @@ interface CandlestickChartProps {
   onCandleClick?: (candle: OHLCV) => void;
 }
 
-export function CandlestickChart({ 
-  data, 
-  patterns = [], 
-  regime, 
-  width = 800, 
+export function CandlestickChart({
+  data,
+  patterns = [],
+  regime,
+  width = 800,
   height = 500,
-  onCandleClick 
+  onCandleClick
 }: CandlestickChartProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hoveredCandle, setHoveredCandle] = useState<OHLCV | null>(null);
@@ -161,7 +161,7 @@ export function CandlestickChart({
       };
 
       const color = regimeColors[regime.type] || '#6B7280';
-      
+
       // Badge de regime
       ctx.fillStyle = color + '40';
       ctx.fillRect(padding.left + 10, padding.top + 10, 140, 30);
@@ -249,7 +249,7 @@ export function CandlestickChart({
       const deltaX = e.clientX - dragStart.current.x;
       const zoomRange = zoom.end - zoom.start;
       const deltaZoom = (deltaX / chartWidth) * zoomRange * 0.5;
-      
+
       setZoom(() => ({
         start: Math.max(0, Math.min(1 - zoomRange, dragStart.current.zoomStart - deltaZoom)),
         end: Math.max(zoomRange, Math.min(1, dragStart.current.zoomStart + zoomRange - deltaZoom))
@@ -274,7 +274,7 @@ export function CandlestickChart({
     const zoomRange = zoom.end - zoom.start;
     const newRange = Math.max(0.05, Math.min(1, zoomRange * zoomFactor));
     const center = (zoom.start + zoom.end) / 2;
-    
+
     setZoom({
       start: Math.max(0, center - newRange / 2),
       end: Math.min(1, center + newRange / 2)
@@ -293,13 +293,13 @@ export function CandlestickChart({
         onClick={handleClick}
         onWheel={handleWheel}
       />
-      
+
       {/* Tooltip */}
       {hoveredCandle && (
-        <div 
+        <div
           className="absolute bg-slate-800 border border-slate-600 rounded-lg p-3 text-xs pointer-events-none z-10"
-          style={{ 
-            left: mousePos.x + 10, 
+          style={{
+            left: mousePos.x + 10,
             top: mousePos.y - 80,
             minWidth: 140
           }}
@@ -309,17 +309,17 @@ export function CandlestickChart({
           </div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1">
             <span className="text-slate-500">Open:</span>
-            <span className="text-slate-200 text-right font-mono">{hoveredCandle.open.toFixed(5)}</span>
+            <span className="text-slate-200 text-right font-mono">{(hoveredCandle.open ?? 0).toFixed(5)}</span>
             <span className="text-slate-500">High:</span>
-            <span className="text-emerald-400 text-right font-mono">{hoveredCandle.high.toFixed(5)}</span>
+            <span className="text-emerald-400 text-right font-mono">{(hoveredCandle.high ?? 0).toFixed(5)}</span>
             <span className="text-slate-500">Low:</span>
-            <span className="text-red-400 text-right font-mono">{hoveredCandle.low.toFixed(5)}</span>
+            <span className="text-red-400 text-right font-mono">{(hoveredCandle.low ?? 0).toFixed(5)}</span>
             <span className="text-slate-500">Close:</span>
-            <span className={`text-right font-mono ${hoveredCandle.close >= hoveredCandle.open ? 'text-emerald-400' : 'text-red-400'}`}>
-              {hoveredCandle.close.toFixed(5)}
+            <span className={`text-right font-mono ${(hoveredCandle.close ?? 0) >= (hoveredCandle.open ?? 0) ? 'text-emerald-400' : 'text-red-400'}`}>
+              {(hoveredCandle.close ?? 0).toFixed(5)}
             </span>
             <span className="text-slate-500">Vol:</span>
-            <span className="text-slate-200 text-right font-mono">{hoveredCandle.volume.toLocaleString()}</span>
+            <span className="text-slate-200 text-right font-mono">{(hoveredCandle.volume ?? 0).toLocaleString()}</span>
           </div>
         </div>
       )}
