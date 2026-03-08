@@ -377,15 +377,15 @@ export function Dashboard() {
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400">ADX:</span>
-                      <span className="font-mono text-slate-200">{regime.indicators.adx}</span>
+                      <span className="font-mono text-slate-200">{regime.indicators?.adx ?? '—'}</span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400">Volatilidade:</span>
-                      <span className="font-mono text-slate-200">{regime.indicators.volatility}%</span>
+                      <span className="font-mono text-slate-200">{regime.indicators?.volatility ?? '—'}%</span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400">Volume:</span>
-                      <span className="font-mono text-slate-200">{regime.indicators.volumeProfile}</span>
+                      <span className="font-mono text-slate-200">{regime.indicators?.volumeProfile ?? '—'}</span>
                     </div>
                   </div>
                 ) : (
