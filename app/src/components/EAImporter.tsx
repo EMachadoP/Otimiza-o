@@ -377,31 +377,6 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    {/* Tipo de estratégia */}
-                    <div className="space-y-2">
-                      <Label className="text-slate-400">Tipo de Estratégia:</Label>
-                      <div className="flex gap-2">
-                        {(['trend', 'reversal', 'breakout', 'scalping', 'mean_reversion'] as const).map(type => (
-                          <Button
-                            key={type}
-                            variant={strategyType === type ? 'default' : 'outline'}
-                            size="sm"
-                            onClick={() => setStrategyType(type)}
-                            className={cn(
-                              strategyType === type
-                                ? 'bg-blue-600'
-                                : 'border-slate-600 text-slate-400'
-                            )}
-                          >
-                            {type === 'trend' && 'Tendência'}
-                            {type === 'reversal' && 'Reversão'}
-                            {type === 'breakout' && 'Breakout'}
-                            {type === 'scalping' && 'Scalping'}
-                            {type === 'mean_reversion' && 'Mean Reversion'}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
 
                     {/* Indicadores detectados */}
                     <div className="space-y-2">

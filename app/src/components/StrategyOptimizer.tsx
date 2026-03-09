@@ -69,7 +69,8 @@ export function StrategyOptimizer({
 
     const ranges: Record<string, { min: number; max: number; step: number }> = {};
     Object.entries(strategy.parameters).forEach(([key, value]) => {
-      if (key === 'magicNumber' || typeof value === 'boolean') return;
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.includes('magic') || typeof value === 'boolean' || String(value).toLowerCase() === 'true' || String(value).toLowerCase() === 'false') return;
 
       const baseValue = typeof value === 'number' ? value : parseFloat(value as string) || 10;
 
@@ -258,7 +259,7 @@ export function StrategyOptimizer({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none shadow-2xl">
+      <DialogContent className="w-[95vw] max-w-[1200px] bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none shadow-2xl">
         <DialogHeader className="p-5 border-b border-slate-800 shrink-0">
           <div className="flex flex-col gap-1.5">
             <DialogTitle className="text-xl flex items-center gap-3">
@@ -341,7 +342,7 @@ export function StrategyOptimizer({
                   <CardContent className="px-4 pb-4 pt-0">
                     <div className="space-y-3">
                       {Object.entries(strategy.parameters)
-                        .filter(([key, value]) => key !== 'magicNumber' && typeof value !== 'boolean')
+                        .filter(([key, value]) => !key.toLowerCase().includes('magic') && typeof value !== 'boolean' && String(value).toLowerCase() !== 'true' && String(value).toLowerCase() !== 'false')
                         .map(([key, value]) => (
                           <div key={key} className="space-y-1.5 p-2 rounded-md bg-slate-900/50 border border-slate-800/50">
                             <div className="flex justify-between items-center px-1">
