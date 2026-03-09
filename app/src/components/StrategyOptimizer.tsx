@@ -36,6 +36,7 @@ interface StrategyOptimizerProps {
   strategy: Strategy | null;
   symbol: Symbol;
   timeframe: Timeframe;
+  period: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onOptimized: (optimizedStrategy: Strategy) => void;
@@ -45,6 +46,7 @@ export function StrategyOptimizer({
   strategy,
   symbol,
   timeframe,
+  period,
   open,
   onOpenChange,
   onOptimized
@@ -67,12 +69,14 @@ export function StrategyOptimizer({
 
     const ranges: Record<string, { min: number; max: number; step: number }> = {};
     Object.entries(strategy.parameters).forEach(([key, value]) => {
+      if (key === 'magicNumber' || typeof value === 'boolean') return;
+
       const baseValue = typeof value === 'number' ? value : parseFloat(value as string) || 10;
 
       // Default: 50% a 200% do valor atual
-      let min = Math.max(1, Math.floor(baseValue * 0.5));
-      let max = Math.floor(baseValue * 2);
-      let step = 1;
+      let min = baseValue < 1 ? baseValue * 0.1 : Math.max(1, Math.floor(baseValue * 0.5));
+      let max = baseValue < 1 ? baseValue * 10 : Math.floor(baseValue * 2);
+      let step = baseValue < 1 ? 0.01 : 1;
 
       // Lógica específica por parâmetro/estratégia
       if (key === 'rsiPeriod' || key === 'period') {
@@ -150,6 +154,21 @@ export function StrategyOptimizer({
     setProgress(10);
 
     try {
+      // Calcular count aproximado baseado no período e timeframe
+      let count = 1000;
+      const periodMap: Record<string, number> = { '1M': 30, '3M': 90, '6M': 180, '1Y': 365, '2Y': 730 };
+      const days = periodMap[period] || 180;
+
+      if (timeframe.value.startsWith('M')) {
+        const mins = parseInt(timeframe.value.substring(1));
+        count = Math.min(10000, Math.floor((days * 24 * 60) / mins));
+      } else if (timeframe.value.startsWith('H')) {
+        const hours = parseInt(timeframe.value.substring(1));
+        count = Math.min(5000, Math.floor((days * 24) / hours));
+      } else if (timeframe.value === 'D1') {
+        count = days;
+      }
+
       const response = await fetch('http://localhost:8000/api/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -159,6 +178,7 @@ export function StrategyOptimizer({
           type: strategy.type,
           paramRanges: parameterRanges,
           criteria: optimizationCriteria,
+          count: count
         }),
       });
 
@@ -238,7 +258,7 @@ export function StrategyOptimizer({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none shadow-2xl">
+      <DialogContent className="max-w-5xl bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none shadow-2xl">
         <DialogHeader className="p-5 border-b border-slate-800 shrink-0">
           <div className="flex flex-col gap-1.5">
             <DialogTitle className="text-xl flex items-center gap-3">
@@ -320,50 +340,55 @@ export function StrategyOptimizer({
                   </CardHeader>
                   <CardContent className="px-4 pb-4 pt-0">
                     <div className="space-y-3">
-                      {Object.entries(strategy.parameters).map(([key, value]) => (
-                        <div key={key} className="space-y-1.5 p-2 rounded-md bg-slate-900/50 border border-slate-800/50">
-                          <div className="flex justify-between items-center px-1">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-medium text-slate-400">{key}</span>
-                              {showSuggestedFeedback && (
-                                <Badge className="bg-emerald-500/10 text-emerald-500 border-none text-[8px] h-3.5 px-1 py-0 animate-in fade-in zoom-in duration-300">
-                                  Sugerido
-                                </Badge>
-                              )}
+                      {Object.entries(strategy.parameters)
+                        .filter(([key, value]) => key !== 'magicNumber' && typeof value !== 'boolean')
+                        .map(([key, value]) => (
+                          <div key={key} className="space-y-1.5 p-2 rounded-md bg-slate-900/50 border border-slate-800/50">
+                            <div className="flex justify-between items-center px-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-medium text-slate-400">{key}</span>
+                                {showSuggestedFeedback && (
+                                  <Badge className="bg-emerald-500/10 text-emerald-500 border-none text-[8px] h-3.5 px-1 py-0 animate-in fade-in zoom-in duration-300">
+                                    Sugerido
+                                  </Badge>
+                                )}
+                              </div>
+                              <span className="text-[10px] text-slate-500">Atual: {value as any}</span>
                             </div>
-                            <span className="text-[10px] text-slate-500">Atual: {value}</span>
+                            <div className="grid grid-cols-3 gap-2">
+                              <div className="space-y-1">
+                                <Label className="text-[10px] text-slate-500 ml-1">Mín</Label>
+                                <Input
+                                  type="number"
+                                  step="any"
+                                  value={parameterRanges[key]?.min ?? 0}
+                                  onChange={(e) => updateRange(key, 'min', parseFloat(e.target.value))}
+                                  className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[10px] text-slate-500 ml-1">Máx</Label>
+                                <Input
+                                  type="number"
+                                  step="any"
+                                  value={parameterRanges[key]?.max ?? 0}
+                                  onChange={(e) => updateRange(key, 'max', parseFloat(e.target.value))}
+                                  className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[10px] text-slate-500 ml-1">Step</Label>
+                                <Input
+                                  type="number"
+                                  step="any"
+                                  value={parameterRanges[key]?.step ?? 1}
+                                  onChange={(e) => updateRange(key, 'step', parseFloat(e.target.value))}
+                                  className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                                />
+                              </div>
+                            </div>
                           </div>
-                          <div className="grid grid-cols-3 gap-2">
-                            <div className="space-y-1">
-                              <Label className="text-[10px] text-slate-500 ml-1">Mín</Label>
-                              <Input
-                                type="number"
-                                value={parameterRanges[key]?.min ?? 0}
-                                onChange={(e) => updateRange(key, 'min', parseFloat(e.target.value))}
-                                className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <Label className="text-[10px] text-slate-500 ml-1">Máx</Label>
-                              <Input
-                                type="number"
-                                value={parameterRanges[key]?.max ?? 0}
-                                onChange={(e) => updateRange(key, 'max', parseFloat(e.target.value))}
-                                className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <Label className="text-[10px] text-slate-500 ml-1">Step</Label>
-                              <Input
-                                type="number"
-                                value={parameterRanges[key]?.step ?? 1}
-                                onChange={(e) => updateRange(key, 'step', parseFloat(e.target.value))}
-                                className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      ))}
+                        ))}
                     </div>
                   </CardContent>
                 </Card>
