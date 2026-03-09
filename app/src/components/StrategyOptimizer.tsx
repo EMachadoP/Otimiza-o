@@ -57,7 +57,8 @@ export function StrategyOptimizer({
   const [results, setResults] = useState<OptimizationResult[]>([]);
   const [totalTested, setTotalTested] = useState(0);
   const [selectedResult, setSelectedResult] = useState<OptimizationResult | null>(null);
-  const [parameterRanges, setParameterRanges] = useState<Record<string, { min: number; max: number; step: number }>>({});
+  const [parameterRanges, setParameterRanges] = useState<Record<string, { min: number | string; max: number | string; step: number | string }>>({});
+  const [enabledParams, setEnabledParams] = useState<Record<string, boolean>>({});
   const [optimizationCriteria, setOptimizationCriteria] = useState<'sharpe' | 'profitFactor' | 'winRate' | 'wfe'>('sharpe');
   const [showSuggestedFeedback, setShowSuggestedFeedback] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,10 +68,14 @@ export function StrategyOptimizer({
   const initializeSmartRanges = useCallback(() => {
     if (!strategy) return;
 
-    const ranges: Record<string, { min: number; max: number; step: number }> = {};
+    const ranges: Record<string, { min: number | string; max: number | string; step: number | string }> = {};
+    const enabled: Record<string, boolean> = {};
+
     Object.entries(strategy.parameters).forEach(([key, value]) => {
       const lowerKey = key.toLowerCase();
-      if (lowerKey.includes('magic') || typeof value === 'boolean' || String(value).toLowerCase() === 'true' || String(value).toLowerCase() === 'false') return;
+      const isHidden = lowerKey.includes('magic') || typeof value === 'boolean' || String(value).toLowerCase() === 'true' || String(value).toLowerCase() === 'false';
+
+      enabled[key] = !isHidden;
 
       const baseValue = typeof value === 'number' ? value : parseFloat(value as string) || 10;
 
@@ -116,6 +121,7 @@ export function StrategyOptimizer({
     });
 
     setParameterRanges(ranges);
+    setEnabledParams(enabled);
   }, [strategy]);
 
   const handleSuggest = useCallback(() => {
@@ -170,6 +176,17 @@ export function StrategyOptimizer({
         count = days;
       }
 
+      const finalRanges: Record<string, any> = {};
+      Object.entries(parameterRanges).forEach(([key, range]) => {
+        if (enabledParams[key]) {
+          finalRanges[key] = {
+            min: Number(range.min),
+            max: Number(range.max),
+            step: Number(range.step)
+          };
+        }
+      });
+
       const response = await fetch('http://localhost:8000/api/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -177,7 +194,7 @@ export function StrategyOptimizer({
           symbol: symbol.name,
           timeframe: timeframe.value,
           type: strategy.type,
-          paramRanges: parameterRanges,
+          paramRanges: finalRanges,
           criteria: optimizationCriteria,
           count: count
         }),
@@ -245,7 +262,7 @@ export function StrategyOptimizer({
     onOpenChange(false);
   };
 
-  const updateRange = (param: string, field: 'min' | 'max' | 'step', value: number) => {
+  const updateRange = (param: string, field: 'min' | 'max' | 'step', value: string) => {
     setParameterRanges(prev => ({
       ...prev,
       [param]: {
@@ -259,7 +276,7 @@ export function StrategyOptimizer({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[95vw] max-w-[1200px] bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none shadow-2xl">
+      <DialogContent className="w-[95vw] max-w-[1600px] bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none shadow-2xl">
         <DialogHeader className="p-5 border-b border-slate-800 shrink-0">
           <div className="flex flex-col gap-1.5">
             <DialogTitle className="text-xl flex items-center gap-3">
@@ -342,13 +359,24 @@ export function StrategyOptimizer({
                   <CardContent className="px-4 pb-4 pt-0">
                     <div className="space-y-3">
                       {Object.entries(strategy.parameters)
-                        .filter(([key, value]) => !key.toLowerCase().includes('magic') && typeof value !== 'boolean' && String(value).toLowerCase() !== 'true' && String(value).toLowerCase() !== 'false')
                         .map(([key, value]) => (
-                          <div key={key} className="space-y-1.5 p-2 rounded-md bg-slate-900/50 border border-slate-800/50">
+                          <div key={key} className={cn(
+                            "space-y-1.5 p-2 rounded-md border transition-opacity",
+                            enabledParams[key] ? "bg-slate-900/50 border-slate-700" : "bg-slate-900/20 border-slate-800/30 opacity-60"
+                          )}>
                             <div className="flex justify-between items-center px-1">
                               <div className="flex items-center gap-2">
-                                <span className="text-xs font-medium text-slate-400">{key}</span>
-                                {showSuggestedFeedback && (
+                                <input
+                                  type="checkbox"
+                                  checked={!!enabledParams[key]}
+                                  onChange={(e) => setEnabledParams(prev => ({ ...prev, [key]: e.target.checked }))}
+                                  className="w-3.5 h-3.5 rounded border-slate-700 bg-slate-800 accent-blue-500 cursor-pointer"
+                                  title="Incluir na otimização"
+                                />
+                                <span className={cn("text-xs font-medium", enabledParams[key] ? "text-slate-200" : "text-slate-500")}>
+                                  {key}
+                                </span>
+                                {showSuggestedFeedback && enabledParams[key] && (
                                   <Badge className="bg-emerald-500/10 text-emerald-500 border-none text-[8px] h-3.5 px-1 py-0 animate-in fade-in zoom-in duration-300">
                                     Sugerido
                                   </Badge>
@@ -358,33 +386,36 @@ export function StrategyOptimizer({
                             </div>
                             <div className="grid grid-cols-3 gap-2">
                               <div className="space-y-1">
-                                <Label className="text-[10px] text-slate-500 ml-1">Mín</Label>
+                                <Label className={cn("text-[10px] ml-1", enabledParams[key] ? "text-slate-400" : "text-slate-600")}>Mín</Label>
                                 <Input
                                   type="number"
                                   step="any"
-                                  value={parameterRanges[key]?.min ?? 0}
-                                  onChange={(e) => updateRange(key, 'min', parseFloat(e.target.value))}
-                                  className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                                  disabled={!enabledParams[key]}
+                                  value={parameterRanges[key]?.min ?? ''}
+                                  onChange={(e) => updateRange(key, 'min', e.target.value)}
+                                  className={cn("bg-slate-900 border-slate-700 h-7 text-xs px-2", !enabledParams[key] && "opacity-50")}
                                 />
                               </div>
                               <div className="space-y-1">
-                                <Label className="text-[10px] text-slate-500 ml-1">Máx</Label>
+                                <Label className={cn("text-[10px] ml-1", enabledParams[key] ? "text-slate-400" : "text-slate-600")}>Máx</Label>
                                 <Input
                                   type="number"
                                   step="any"
-                                  value={parameterRanges[key]?.max ?? 0}
-                                  onChange={(e) => updateRange(key, 'max', parseFloat(e.target.value))}
-                                  className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                                  disabled={!enabledParams[key]}
+                                  value={parameterRanges[key]?.max ?? ''}
+                                  onChange={(e) => updateRange(key, 'max', e.target.value)}
+                                  className={cn("bg-slate-900 border-slate-700 h-7 text-xs px-2", !enabledParams[key] && "opacity-50")}
                                 />
                               </div>
                               <div className="space-y-1">
-                                <Label className="text-[10px] text-slate-500 ml-1">Step</Label>
+                                <Label className={cn("text-[10px] ml-1", enabledParams[key] ? "text-slate-400" : "text-slate-600")}>Step</Label>
                                 <Input
                                   type="number"
                                   step="any"
-                                  value={parameterRanges[key]?.step ?? 1}
-                                  onChange={(e) => updateRange(key, 'step', parseFloat(e.target.value))}
-                                  className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                                  disabled={!enabledParams[key]}
+                                  value={parameterRanges[key]?.step ?? ''}
+                                  onChange={(e) => updateRange(key, 'step', e.target.value)}
+                                  className={cn("bg-slate-900 border-slate-700 h-7 text-xs px-2", !enabledParams[key] && "opacity-50")}
                                 />
                               </div>
                             </div>
