@@ -252,7 +252,7 @@ async def optimize(payload: Dict):
     
     # 1. Get Data
     df = mt5_bridge.get_ohlcv(symbol, timeframe, count=1000)
-    if df.empty:
+    if df is None or df.empty:
         raise HTTPException(status_code=400, detail="Sem dados disponíveis no MT5")
         
     # 2. Add Basic Features
@@ -271,34 +271,52 @@ async def optimize(payload: Dict):
     except Exception as e:
         logger.error(f"Erro na otimização: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-# ──────────────────────────────────────────
+
+
 @app.post("/api/convert-mql")
 async def convert_mql(payload: Dict):
     """Convert MQL4/5 code into a Python strategy."""
-    mql_code = payload.get("code", "")
+    mql_code = str(payload.get("code") or "").strip()
     if not mql_code:
         raise HTTPException(status_code=400, detail="MQL code is required")
-        
+
+    parsed = {
+        "name": "Custom_MQL_Strategy",
+        "type": "trend",
+        "inputs": {},
+        "indicators": [],
+        "signals_logic": "",
+        "errors": [],
+    }
+
     try:
         parsed = mql_parser.parse(mql_code)
-        python_code = mql_parser.convert_to_python(mql_code)
-        
-        has_logic = bool(parsed.get("signals_logic", "").strip())
-        errors = parsed.get("errors", [])
-        
-        status = "success"
-        if errors or not has_logic:
-            status = "partial"
-            
-        return {
-            "strategy": parsed,
-            "pythonCode": python_code,
-            "status": status,
-            "errors": errors + ([] if has_logic else ["Não foi possível extrair a lógica de sinais."])
-        }
     except Exception as e:
-        logger.error(f"Error converting MQL: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning("Error parsing MQL snippet", exc_info=True)
+        parsed["signals_logic"] = mql_code
+        parsed["errors"].append(f"Falha ao interpretar o snippet: {e}")
+
+    errors = list(parsed.get("errors", []))
+    has_logic = bool((parsed.get("signals_logic") or "").strip())
+
+    try:
+        python_code = mql_parser.convert_to_python(mql_code)
+    except Exception as e:
+        logger.warning("Error converting MQL to Python", exc_info=True)
+        errors.append(f"Falha na conversão automática para Python: {e}")
+        python_code = mql_parser.build_fallback_python(mql_code, parsed=parsed)
+
+    if not has_logic:
+        errors.append("Não foi possível extrair a lógica de sinais completa.")
+
+    status = "success" if has_logic and not errors else "partial"
+
+    return {
+        "strategy": parsed,
+        "pythonCode": python_code,
+        "status": status,
+        "errors": errors,
+    }
 
 
 @app.post("/api/export-ea")
