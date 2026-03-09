@@ -61,29 +61,59 @@ class BacktestEngine:
         },
     ]
 
+    def _coerce_params(self, params: Dict) -> Dict:
+        """Ensure all parameters are numeric if possible."""
+        coerced = {}
+        for k, v in params.items():
+            try:
+                if isinstance(v, (int, float)):
+                    coerced[k] = v
+                elif isinstance(v, str):
+                    if '.' in v:
+                        coerced[k] = float(v)
+                    else:
+                        coerced[k] = int(v)
+                else:
+                    coerced[k] = v
+            except:
+                coerced[k] = v
+        return coerced
+
     def _generate_signals(self, df: pd.DataFrame, strategy_type: str, params: Dict) -> pd.Series:
         """Generate buy/sell signals based on strategy type using real data."""
         close = df['close']
 
+        # Coerce/Extract parameters safely
+        def get_p(key, default):
+            val = params.get(key, default)
+            try:
+                if isinstance(val, (int, float)): return val
+                # Handle cases like "10.0" or " 10 "
+                s_val = str(val).strip()
+                if not s_val: return default
+                return float(s_val) if '.' in s_val else int(s_val)
+            except:
+                return default
+
         if strategy_type == "trend":
-            fast = close.ewm(span=params.get('fastEMA', 9), adjust=False).mean()
-            slow = close.ewm(span=params.get('slowEMA', 21), adjust=False).mean()
+            fast = close.ewm(span=get_p('fastEMA', 9), adjust=False).mean()
+            slow = close.ewm(span=get_p('slowEMA', 21), adjust=False).mean()
             signals = np.where(fast > slow, 1, -1)
 
         elif strategy_type == "reversal":
-            period = params.get('rsiPeriod', 14)
+            period = get_p('rsiPeriod', 14)
             delta = close.diff()
             gain = delta.clip(lower=0).rolling(window=period).mean()
             loss = (-delta.clip(upper=0)).rolling(window=period).mean()
             rs = gain / (loss + 1e-10)
             rsi = 100 - (100 / (1 + rs))
-            ob = params.get('overbought', 70)
-            os_val = params.get('oversold', 30)
+            ob = get_p('overbought', 70)
+            os_val = get_p('oversold', 30)
             signals = np.where(rsi < os_val, 1, np.where(rsi > ob, -1, 0))
 
         elif strategy_type == "breakout":
-            period = params.get('bbPeriod', 20)
-            std_dev = params.get('bbStd', 2.0)
+            period = get_p('bbPeriod', 20)
+            std_dev = get_p('bbStd', 2.0)
             sma = close.rolling(window=period).mean()
             std = close.rolling(window=period).std()
             upper = sma + std_dev * std
@@ -91,9 +121,9 @@ class BacktestEngine:
             signals = np.where(close > upper, 1, np.where(close < lower, -1, 0))
 
         elif strategy_type == "scalping":
-            fast = close.ewm(span=params.get('fastEMA', 5), adjust=False).mean()
-            slow = close.ewm(span=params.get('slowEMA', 13), adjust=False).mean()
-            period = params.get('rsiPeriod', 7)
+            fast = close.ewm(span=get_p('fastEMA', 5), adjust=False).mean()
+            slow = close.ewm(span=get_p('slowEMA', 13), adjust=False).mean()
+            period = get_p('rsiPeriod', 7)
             delta = close.diff()
             gain = delta.clip(lower=0).rolling(window=period).mean()
             loss = (-delta.clip(upper=0)).rolling(window=period).mean()
@@ -104,8 +134,8 @@ class BacktestEngine:
             signals = np.where(trend == momentum, trend, 0)
 
         elif strategy_type == "mean_reversion":
-            period = params.get('period', 20)
-            std_dev = params.get('std', 2.0)
+            period = get_p('period', 20)
+            std_dev = get_p('std', 2.0)
             sma = close.rolling(window=period).mean()
             std = close.rolling(window=period).std()
             upper = sma + std_dev * std
@@ -114,7 +144,7 @@ class BacktestEngine:
             signals = np.where(close > upper, -1, np.where(close < lower, 1, 0))
 
         elif strategy_type == "donchian":
-            period = params.get('period', 20)
+            period = get_p('period', 20)
             upper = close.rolling(window=period).max().shift(1)
             lower = close.rolling(window=period).min().shift(1)
             signals = np.where(close > upper, 1, np.where(close < lower, -1, 0))
@@ -184,44 +214,128 @@ class BacktestEngine:
         }
 
     def run_backtest(self, df: pd.DataFrame, strategy_type: str, params: Dict, symbol_name: str = "EURUSD", fast: bool = False) -> Dict:
-        """Run a vectorized backtest. If fast=True, skip curve formatting and return minimal metrics."""
+        """Run a vectorized backtest with precise SL/TP checking."""
         try:
+            params = self._coerce_params(params)
             signals = self._generate_signals(df, strategy_type, params)
-            initial_balance = 10000
+            initial_balance = 10000.0
             close = df['close']
-            returns = close.pct_change()
+            high = df['high']
+            low = df['low']
             
-            pip_size = 0.0001 if symbol_name and ("JPY" not in symbol_name and "BTC" not in symbol_name and "XAU" not in symbol_name) else 0.01
-            if "XAU" in symbol_name: pip_size = 0.1 
-            if "BTC" in symbol_name: pip_size = 1.0 
+            # Determinar tamanho do pip
+            if 'JPY' in symbol_name:
+                pip_size = 0.01
+            elif 'XAU' in symbol_name:
+                pip_size = 0.1
+            elif 'BTC' in symbol_name or 'ETH' in symbol_name:
+                pip_size = 1.0
+            else:
+                pip_size = 0.0001
             
-            sl_pips = params.get('stopLoss', 0)
-            tp_pips = params.get('takeProfit', 0)
-            
-            strategy_returns = signals.shift(1) * returns
-            
-            if sl_pips > 0 or tp_pips > 0:
-                high = df['high']
-                low = df['low']
-                entry_prices = close.where(signals.diff().abs() > 0).ffill()
-                
-                if sl_pips > 0:
-                    sl_dist = sl_pips * pip_size
-                    long_sl_hit = (signals.shift(1) == 1) & (low < (entry_prices - sl_dist))
-                    short_sl_hit = (signals.shift(1) == -1) & (high > (entry_prices + sl_dist))
-                    sl_hit = long_sl_hit | short_sl_hit
-                    strategy_returns[sl_hit] = - (sl_dist / entry_prices)
-                
-                if tp_pips > 0:
-                    tp_dist = tp_pips * pip_size
-                    long_tp_hit = (signals.shift(1) == 1) & (high > (entry_prices + tp_dist))
-                    short_tp_hit = (signals.shift(1) == -1) & (low < (entry_prices - tp_dist))
-                    tp_hit = long_tp_hit | short_tp_hit
-                    strategy_returns[tp_hit] = (tp_dist / entry_prices)
+            # Safe parameter extraction
+            def get_p(key, default):
+                val = params.get(key, default)
+                try:
+                    if isinstance(val, (int, float)): return val
+                    s_val = str(val).strip()
+                    if not s_val: return default
+                    return float(s_val) if '.' in s_val else int(s_val)
+                except:
+                    return default
 
-            equity_curve = (1 + strategy_returns).cumprod() * initial_balance
-            equity_curve = equity_curve.ffill().fillna(initial_balance)
+            stop_loss_pips = get_p('stopLoss', 0)
+            take_profit_pips = get_p('takeProfit', 0)
+            sl_dist = stop_loss_pips * pip_size if stop_loss_pips > 0 else None
+            tp_dist = take_profit_pips * pip_size if take_profit_pips > 0 else None
+            
+            # ATR-based multipliers
+            sl_mult = get_p('sLMultiplier', get_p('slMultiplier', get_p('SLMultiplier', 0.0)))
+            tp_mult = get_p('tPMultiplier', get_p('tpMultiplier', get_p('TPMultiplier', 0.0)))
+            atr_period = get_p('aTRPeriod', get_p('atrPeriod', get_p('ATRPeriod', 14)))
+            
+            if sl_mult > 0 or tp_mult > 0:
+                high_low = high - low
+                high_close = (high - close.shift(1)).abs()
+                low_close = (low - close.shift(1)).abs()
+                tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+                atr = tr.rolling(atr_period).mean()
+            else:
+                atr = pd.Series(0, index=df.index)
+            
+            # Simular trades com SL/TP preciso
+            equity = [initial_balance]
+            position = 0  # 0 = flat, 1 = long, -1 = short
+            entry_price = 0.0
+            
+            current_sl_dist = None
+            current_tp_dist = None
+            
+            for i in range(1, len(df)):
+                current_equity = equity[-1]
+                
+                # 1. Novo sinal? Abrir posição no close deste bar
+                if position == 0 and signals.iloc[i] != 0:
+                    position = signals.iloc[i]
+                    entry_price = close.iloc[i]
+                    
+                    # Update dynamic SL/TP
+                    if sl_mult > 0 and not pd.isna(atr.iloc[i]) and atr.iloc[i] > 0:
+                        current_sl_dist = atr.iloc[i] * sl_mult
+                    else:
+                        current_sl_dist = sl_dist
+                        
+                    if tp_mult > 0 and not pd.isna(atr.iloc[i]) and atr.iloc[i] > 0:
+                        current_tp_dist = atr.iloc[i] * tp_mult
+                    else:
+                        current_tp_dist = tp_dist
+                
+                # 2. Se houver posição, verificar SL/TP ou Reversão de Sinal
+                if position != 0:
+                    # Closing on reversal
+                    if signals.iloc[i] != 0 and signals.iloc[i] != position:
+                        pnl = (close.iloc[i] - entry_price) / entry_price if position == 1 else (entry_price - close.iloc[i]) / entry_price
+                        current_equity *= (1 + pnl)
+                        position = signals.iloc[i]
+                        entry_price = close.iloc[i]
+                        if sl_mult > 0 and not pd.isna(atr.iloc[i]) and atr.iloc[i] > 0:
+                            current_sl_dist = atr.iloc[i] * sl_mult
+                        else:
+                            current_sl_dist = sl_dist
+                        if tp_mult > 0 and not pd.isna(atr.iloc[i]) and atr.iloc[i] > 0:
+                            current_tp_dist = atr.iloc[i] * tp_mult
+                        else:
+                            current_tp_dist = tp_dist
+                        
+                    elif position == 1:  # Long
+                        sl_price = entry_price - current_sl_dist if current_sl_dist else 0
+                        tp_price = entry_price + current_tp_dist if current_tp_dist else float('inf')
+                        
+                        if low.iloc[i] <= sl_price:
+                            pnl = (sl_price - entry_price) / entry_price
+                            current_equity *= (1 + pnl)
+                            position = 0
+                        elif high.iloc[i] >= tp_price:
+                            pnl = (tp_price - entry_price) / entry_price
+                            current_equity *= (1 + pnl)
+                            position = 0
+                            
+                    else:  # Short
+                        sl_price = entry_price + current_sl_dist if current_sl_dist else float('inf')
+                        tp_price = entry_price - current_tp_dist if current_tp_dist else 0
+                        
+                        if high.iloc[i] >= sl_price:
+                            pnl = (entry_price - sl_price) / entry_price
+                            current_equity *= (1 + pnl)
+                            position = 0
+                        elif low.iloc[i] <= tp_price:
+                            pnl = (entry_price - tp_price) / entry_price
+                            current_equity *= (1 + pnl)
+                            position = 0
+                
+                equity.append(current_equity)
 
+            equity_curve = pd.Series(equity, index=df.index)
             metrics = self._compute_metrics(equity_curve, signals, initial_balance, fast=fast)
             
             if fast:
@@ -252,6 +366,7 @@ class BacktestEngine:
     # ──────────────────────────────────────────
     def run_wfa(self, df: pd.DataFrame, strategy_type: str, params: Dict, symbol_name: str = "EURUSD", n_windows: int = 5) -> Dict:
         """Real Walk-Forward Analysis on historical data."""
+        params = self._coerce_params(params)
         total = len(df)
         # Adaptive: reduce windows if data is short
         effective_windows = n_windows
@@ -322,6 +437,7 @@ class BacktestEngine:
     # ──────────────────────────────────────────
     def run_cpcv(self, df: pd.DataFrame, strategy_type: str, params: Dict, symbol_name: str = "EURUSD", n_folds: int = 6, embargo: int = 5) -> Dict:
         """Real CPCV on historical data."""
+        params = self._coerce_params(params)
         total = len(df)
         fold_size = total // n_folds
         folds = []
@@ -370,6 +486,7 @@ class BacktestEngine:
     # ──────────────────────────────────────────
     def run_monte_carlo(self, df: pd.DataFrame, strategy_type: str, params: Dict, symbol_name: str = "EURUSD", n_simulations: int = 10000) -> Dict:
         """Real Monte Carlo simulation on strategy returns."""
+        params = self._coerce_params(params)
         signals = self._generate_signals(df, strategy_type, params)
         returns = df['close'].pct_change() * signals.shift(1)
         returns = returns.dropna().values

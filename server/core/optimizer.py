@@ -10,16 +10,33 @@ from itertools import product
 import logging
 from dataclasses import dataclass, asdict
 
-logger = logging.getLogger(__name__)
+import hashlib
+import json
+from functools import lru_cache
+from dataclasses import dataclass, asdict
 
-# Global state for worker processes to avoid serialization
+logger = logging.getLogger(__name__)
+# Cache simples em memória (pode ser Redis em produção)
+_optimization_cache = {}
+
+def _get_cache_key(df, strategy_type, param_ranges, criteria):
+    """Gera chave de cache única."""
+    param_hash = hashlib.md5(
+        json.dumps(param_ranges, sort_keys=True).encode()
+    ).hexdigest()[:16]
+    
+    return f"{strategy_type}_{param_hash}_{criteria}"
+
+# Variáveis globais para workers
 _GLOBAL_DF = None
+_GLOBAL_SYMBOL = None
 _GLOBAL_ENGINE = None
 
-def _init_worker(df: pd.DataFrame, engine: Any):
-    """Initialize worker process with global data."""
-    global _GLOBAL_DF, _GLOBAL_ENGINE
+def _init_worker(df: pd.DataFrame, symbol, engine: Any):
+    """Inicializa worker com dados pré-carregados."""
+    global _GLOBAL_DF, _GLOBAL_SYMBOL, _GLOBAL_ENGINE
     _GLOBAL_DF = df
+    _GLOBAL_SYMBOL = symbol
     _GLOBAL_ENGINE = engine
 
 def _sanitize_metrics(metrics: Dict) -> Dict:
@@ -32,38 +49,40 @@ def _sanitize_metrics(metrics: Dict) -> Dict:
             sanitized[k] = v
     return sanitized
 
-def _worker_evaluate_fast(strategy_type: str, params: Dict, symbol_name: str) -> Optional[Dict]:
-    """Fast evaluation for initial screening."""
+def _evaluate_params_worker(args):
+    """Avalia parâmetros usando dados globais para evitar serialização repetida."""
+    global _GLOBAL_DF, _GLOBAL_SYMBOL, _GLOBAL_ENGINE
+    params, strategy_type, fast = args
+    
     try:
-        metrics = _GLOBAL_ENGINE.run_backtest(_GLOBAL_DF, strategy_type, params, symbol_name, fast=True)
-        return {"parameters": params, "metrics": metrics}
-    except:
-        return None
-
-def _worker_evaluate_full(strategy_type: str, params: Dict, symbol_name: str) -> Optional[Dict]:
-    """Full evaluation with WFA and Monte Carlo."""
-    try:
-        # Full backtest
-        bt = _GLOBAL_ENGINE.run_backtest(_GLOBAL_DF, strategy_type, params, symbol_name)
-        # WFA
-        wfa = _GLOBAL_ENGINE.run_wfa(_GLOBAL_DF, strategy_type, params, symbol_name)
-        # Monte Carlo
-        mc = _GLOBAL_ENGINE.run_monte_carlo(_GLOBAL_DF, strategy_type, params, symbol_name)
-        
-        bt['metrics'].update({
-            'wfe': wfa['efficiency'],
-            'sharpeOOS': wfa['oosSharpe'],
-            'maxDrawdownMC': mc['maxDrawdownP95']
-        })
-        
-        return {
-            "parameters": params,
-            "metrics": bt['metrics'],
-            "equityCurve": bt['equityCurve'],
-            "wfa": wfa,
-            "mc": mc
-        }
-    except:
+        if fast:
+            metrics = _GLOBAL_ENGINE.run_backtest(_GLOBAL_DF, strategy_type, params, _GLOBAL_SYMBOL, fast=True)
+            # Filtros rápidos para o estágio 1
+            if metrics.get('sharpeIS', 0) < -0.5: return None
+            if metrics.get('maxDrawdown', 100) > 60: return None
+            return {'parameters': params, 'metrics': metrics}
+        else:
+            # Full backtest
+            bt = _GLOBAL_ENGINE.run_backtest(_GLOBAL_DF, strategy_type, params, _GLOBAL_SYMBOL)
+            # WFA
+            wfa = _GLOBAL_ENGINE.run_wfa(_GLOBAL_DF, strategy_type, params, _GLOBAL_SYMBOL)
+            # Monte Carlo
+            mc = _GLOBAL_ENGINE.run_monte_carlo(_GLOBAL_DF, strategy_type, params, _GLOBAL_SYMBOL)
+            
+            bt['metrics'].update({
+                'wfe': wfa['efficiency'],
+                'sharpeOOS': wfa['oosSharpe'],
+                'maxDrawdownMC': mc['maxDrawdownP95']
+            })
+            
+            return {
+                "parameters": params,
+                "metrics": bt['metrics'],
+                "equityCurve": bt['equityCurve'],
+                "wfa": wfa,
+                "mc": mc
+            }
+    except Exception:
         return None
 
 
@@ -74,14 +93,17 @@ class OptimizationResult:
     metrics: Dict[str, Any]
     rank: int = 0
     validation: Optional[Dict] = None
+    stage: int = 1
 
 
 class ParameterOptimizer:
     """Otimizador de parâmetros de estratégias com suporte a paralelismo."""
     
-    def __init__(self, backtest_engine: Any, max_workers: int = 4):
+    def __init__(self, backtest_engine: Any, max_workers: int = 4, progress_callback: Optional[Any] = None):
         self.backtest_engine = backtest_engine
         self.max_workers = max_workers
+        self.progress_callback = progress_callback
+        self.symbol = "EURUSD"
         
     def _generate_grid_from_ranges(self, param_ranges: Dict[str, Dict]) -> Dict[str, List[float]]:
         """Converte formato {min, max, step} em listas para o produtor."""
@@ -89,6 +111,9 @@ class ParameterOptimizer:
         for key, r in param_ranges.items():
             if isinstance(r, dict) and "min" in r and "max" in r:
                 mn, mx, step = r["min"], r["max"], r.get("step", 1)
+                if mn > mx:
+                    expanded[key] = [mn]
+                    continue
                 values = []
                 v = mn
                 while v <= mx + 1e-9:
@@ -111,12 +136,19 @@ class ParameterOptimizer:
         symbol_name: str = "EURUSD"
     ) -> Dict:
         """
-        3-Stage Optimization Funnel:
-        1. Fast Screening (Vectorized Backtest only)
-        2. Refinement (Top candidates with light WFA) -> Currently merged into 3 for simplicity
-        3. Full Validation (WFA + Monte Carlo for Top candidates)
+        3-Stage Optimization Funnel with Caching and Improved Parallelization.
         """
+        self.symbol = symbol_name
+        
+        # Verificar cache
+        cache_key = _get_cache_key(df, strategy_type, param_ranges, criteria)
+        if cache_key in _optimization_cache:
+            logger.info("Usando resultado em cache")
+            return _optimization_cache[cache_key]
+
         expanded_ranges = self._generate_grid_from_ranges(param_ranges)
+            
+        MAX_GRID_COMBOS = 5000 
         
         # Generator for combinations to save memory
         def get_combinations():
@@ -128,50 +160,70 @@ class ParameterOptimizer:
         for vals in expanded_ranges.values():
             total_combos *= len(vals)
             
-        MAX_GRID_COMBOS = 5000 
         is_random = total_combos > MAX_GRID_COMBOS
         n_trials = 500 if is_random else total_combos
         
         logger.info(f"Otimizador: Estágio 1 (Triagem) - {n_trials} candidatos.")
         
-        # Stage 1: Fast Screening
+        # Stage 1: Fast Screening using initializer to avoid repeated df serialization
         candidates = []
-        with ProcessPoolExecutor(max_workers=self.max_workers, initializer=_init_worker, initargs=(df, self.backtest_engine)) as executor:
-            futures = []
+        with ProcessPoolExecutor(
+            max_workers=self.max_workers, 
+            initializer=_init_worker, 
+            initargs=(df, symbol_name, self.backtest_engine)
+        ) as executor:
             
             if is_random:
-                # Random sampling (could be Sobol/LHS in future)
-                all_combos = list(get_combinations())
                 import random
-                sampled = random.sample(all_combos, n_trials)
-                for params in sampled:
-                    futures.append(executor.submit(_worker_evaluate_fast, strategy_type, params, symbol_name))
+                # Memory efficient sampling from product without creating the full list
+                keys = expanded_ranges.keys()
+                vals = list(expanded_ranges.values())
+                combinations = []
+                # Simple random selection from coordinates
+                indices = set()
+                while len(indices) < n_trials:
+                    idx = tuple(random.randint(0, len(v) - 1) for v in vals)
+                    if idx not in indices:
+                        indices.add(idx)
+                        combinations.append(dict(zip(keys, [vals[i][idx[i]] for i in range(len(vals))])))
             else:
-                for params in get_combinations():
-                    futures.append(executor.submit(_worker_evaluate_fast, strategy_type, params, symbol_name))
+                combinations = list(get_combinations())
             
-            for future in as_completed(futures):
-                res = future.result()
-                if res and res['metrics'].get('sharpeIS', -1) > 0.1: # Basic filter
-                    candidates.append(res)
+            args = [(combo, strategy_type, True) for combo in combinations]
+            
+            for i, result in enumerate(executor.map(_evaluate_params_worker, args)):
+                if result:
+                    candidates.append(result)
+                else:
+                    logger.debug(f"Stage 1: Candidate failed filter.")
 
         # Sort and take top candidates for Stage 3
         candidates.sort(key=lambda x: x['metrics'].get('sharpeIS', 0), reverse=True)
-        top_candidates = candidates[:30] # Top 30 for full validation
+        top_candidates = candidates[:30]
         
         logger.info(f"Otimizador: Estágio 3 (Validação Full) - {len(top_candidates)} candidatos.")
         
         # Stage 3: Full Validation
         final_results = []
-        with ProcessPoolExecutor(max_workers=self.max_workers, initializer=_init_worker, initargs=(df, self.backtest_engine)) as executor:
-            futures = [executor.submit(_worker_evaluate_full, strategy_type, c['parameters'], symbol_name) for c in top_candidates]
-            for future in as_completed(futures):
-                res = future.result()
+        with ProcessPoolExecutor(
+            max_workers=self.max_workers, 
+            initializer=_init_worker, 
+            initargs=(df, symbol_name, self.backtest_engine)
+        ) as executor:
+            args = [(c['parameters'], strategy_type, False) for c in top_candidates]
+            
+            for i, res in enumerate(executor.map(_evaluate_params_worker, args)):
                 if res:
                     final_results.append(OptimizationResult(
                         parameters=res['parameters'],
-                        metrics=res['metrics']
+                        metrics=res['metrics'],
+                        validation={
+                            "wfa": res.get('wfa'),
+                            "mc": res.get('mc')
+                        }
                     ))
+                else:
+                    logger.warning(f"Stage 3: Candidate failed full validation.")
         
         # Final ranking
         final_results.sort(key=lambda x: x.metrics.get(criteria, 0), reverse=True)
@@ -179,12 +231,17 @@ class ParameterOptimizer:
             res.rank = i + 1
             res.metrics = _sanitize_metrics(res.metrics)
             
-        return {
+        output = {
             "totalSearchSpace": total_combos,
             "totalTested": n_trials,
             "bestConfig": asdict(final_results[0]) if final_results else None,
             "results": [asdict(r) for r in final_results[:n_top]]
         }
+        
+        # Salvar no cache
+        _optimization_cache[cache_key] = output
+        
+        return output
         
     optimize_strategy = optimize # Alias for compatibility
 
@@ -324,9 +381,9 @@ class ParameterOptimizer:
 
     def _is_viable(self, metrics: Dict) -> bool:
         """Filtro de viabilidade para descartar resultados mediocres."""
-        if metrics.get('sharpeIS', 0) < 0.1: return False
+        if metrics.get('sharpeIS', 0) < -0.5: return False
         if metrics.get('totalTrades', 0) < 3: return False
-        if metrics.get('maxDrawdown', 100) > 40: return False
+        if metrics.get('maxDrawdown', 100) > 60: return False
         return True
 
     def _sort_by_criteria(
