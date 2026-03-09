@@ -324,8 +324,8 @@ class ParameterOptimizer:
 
     def _is_viable(self, metrics: Dict) -> bool:
         """Filtro de viabilidade para descartar resultados mediocres."""
-        if metrics.get('sharpeIS', 0) < 0.3: return False
-        if metrics.get('totalTrades', 0) < 5: return False
+        if metrics.get('sharpeIS', 0) < 0.1: return False
+        if metrics.get('totalTrades', 0) < 3: return False
         if metrics.get('maxDrawdown', 100) > 40: return False
         return True
 

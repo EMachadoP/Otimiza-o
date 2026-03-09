@@ -395,6 +395,9 @@ void ModifyPosition(double newSL)
             parameters.setdefault("RsiPeriod", 14)
             parameters.setdefault("Oversold", 30)
             parameters.setdefault("Overbought", 70)
+        elif strategy_type == 'mean_reversion':
+            parameters.setdefault("period", 20)
+            parameters.setdefault("std", 2.0)
         elif strategy_type in ['donchian', 'breakout']:
             parameters.setdefault("DonchianPeriod", 20)
             
@@ -493,6 +496,15 @@ void ModifyPosition(double newSL)
    if(rsi > InpOverbought) return -1;
    return 0;'''
             
+            elif strategy_type == 'mean_reversion':
+                return '''   double upper = iBands(Symbol(), PERIOD_CURRENT, Inpperiod, Inpstd, 0, PRICE_CLOSE, MODE_UPPER, 0);
+   double lower = iBands(Symbol(), PERIOD_CURRENT, Inpperiod, Inpstd, 0, PRICE_CLOSE, MODE_LOWER, 0);
+   double close = iClose(Symbol(), PERIOD_CURRENT, 0);
+   
+   if(close < lower) return 1;
+   if(close > upper) return -1;
+   return 0;'''
+            
             elif strategy_type in ['donchian', 'breakout']:
                 return '''   double upper = iHigh(Symbol(), PERIOD_CURRENT, iHighest(Symbol(), PERIOD_CURRENT, MODE_HIGH, InpDonchianPeriod, 1));
    double lower = iLow(Symbol(), PERIOD_CURRENT, iLowest(Symbol(), PERIOD_CURRENT, MODE_LOW, InpDonchianPeriod, 1));
@@ -544,6 +556,18 @@ void ModifyPosition(double newSL)
    
    if(r[0] < InpOversold) return 1;
    if(r[0] > InpOverbought) return -1;
+   return 0;'''
+            
+            elif strategy_type == 'mean_reversion':
+                return '''   static int hBands = INVALID_HANDLE;
+   if(hBands == INVALID_HANDLE) hBands = iBands(_Symbol, _Period, Inpperiod, 0, Inpstd, PRICE_CLOSE);
+   
+   double upper[1], lower[1], close[1];
+   if(CopyBuffer(hBands, 1, 0, 1, upper) < 1 || CopyBuffer(hBands, 2, 0, 1, lower) < 1) return 0;
+   CopyClose(_Symbol, _Period, 0, 1, close);
+   
+   if(close[0] < lower[0]) return 1;
+   if(close[0] > upper[0]) return -1;
    return 0;'''
             
             elif strategy_type in ['donchian', 'breakout']:
