@@ -183,7 +183,7 @@ void ManageOpenPosition()
 <<inputs>>
 
 //--- Global Variables
-ulong g_ticket = INVALID_TICKET;
+ulong g_ticket = 0;
 datetime g_lastBarTime = 0;
 
 //+------------------------------------------------------------------+
@@ -401,7 +401,7 @@ void ModifyPosition(double newSL)
         inputs_str = self._generate_inputs(parameters, version)
         
         # Gerar lógica de sinais
-        signal_logic = self._generate_signal_logic(strategy_type)
+        signal_logic = self._generate_signal_logic(strategy_type, version)
         
         indicators = strategy.get('indicators') or []
         
@@ -473,10 +473,11 @@ void ModifyPosition(double newSL)
         
         return '\n'.join(lines)
     
-    def _generate_signal_logic(self, strategy_type: str) -> str:
-        """Gera lógica de sinais baseada no tipo."""
-        if strategy_type == 'trend':
-            return '''   double fastMA = iMA(Symbol(), PERIOD_CURRENT, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE, 0);
+    def _generate_signal_logic(self, strategy_type: str, version: str) -> str:
+        """Gera lógica de sinais baseada no tipo e versão."""
+        if version == 'mql4':
+            if strategy_type == 'trend':
+                return '''   double fastMA = iMA(Symbol(), PERIOD_CURRENT, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE, 0);
    double slowMA = iMA(Symbol(), PERIOD_CURRENT, InpSlowEMA, 0, MODE_EMA, PRICE_CLOSE, 0);
    double fastMAPrev = iMA(Symbol(), PERIOD_CURRENT, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE, 1);
    double slowMAPrev = iMA(Symbol(), PERIOD_CURRENT, InpSlowEMA, 0, MODE_EMA, PRICE_CLOSE, 1);
@@ -484,39 +485,106 @@ void ModifyPosition(double newSL)
    if(fastMA > slowMA && fastMAPrev <= slowMAPrev) return 1;
    if(fastMA < slowMA && fastMAPrev >= slowMAPrev) return -1;
    return 0;'''
-        
-        elif strategy_type == 'reversal':
-            return '''   double rsi = iRSI(Symbol(), PERIOD_CURRENT, InpRsiPeriod, PRICE_CLOSE, 0);
+            
+            elif strategy_type == 'reversal':
+                return '''   double rsi = iRSI(Symbol(), PERIOD_CURRENT, InpRsiPeriod, PRICE_CLOSE, 0);
    
    if(rsi < InpOversold) return 1;
    if(rsi > InpOverbought) return -1;
    return 0;'''
-        
-        elif strategy_type in ['donchian', 'breakout']:
-            return '''   double upper = iHigh(Symbol(), PERIOD_CURRENT, iHighest(Symbol(), PERIOD_CURRENT, MODE_HIGH, InpDonchianPeriod, 1));
+            
+            elif strategy_type in ['donchian', 'breakout']:
+                return '''   double upper = iHigh(Symbol(), PERIOD_CURRENT, iHighest(Symbol(), PERIOD_CURRENT, MODE_HIGH, InpDonchianPeriod, 1));
    double lower = iLow(Symbol(), PERIOD_CURRENT, iLowest(Symbol(), PERIOD_CURRENT, MODE_LOW, InpDonchianPeriod, 1));
    double close = iClose(Symbol(), PERIOD_CURRENT, 0);
    
    if(close > upper) return 1;
    if(close < lower) return -1;
    return 0;'''
-        
-        elif strategy_type == 'scalping':
-            return '''   double fastMA = iMA(Symbol(), PERIOD_CURRENT, 5, 0, MODE_EMA, PRICE_CLOSE, 0);
+            
+            elif strategy_type == 'scalping':
+                return '''   double fastMA = iMA(Symbol(), PERIOD_CURRENT, 5, 0, MODE_EMA, PRICE_CLOSE, 0);
    double slowMA = iMA(Symbol(), PERIOD_CURRENT, 13, 0, MODE_EMA, PRICE_CLOSE, 0);
    double rsi = iRSI(Symbol(), PERIOD_CURRENT, 7, PRICE_CLOSE, 0);
    
    if(fastMA > slowMA && rsi < 70) return 1;
    if(fastMA < slowMA && rsi > 30) return -1;
    return 0;'''
-        
-        else:
-            return '''   // Default: EMA Crossover
+            
+            else:
+                return '''   // Default: EMA Crossover
    double fastMA = iMA(Symbol(), PERIOD_CURRENT, 9, 0, MODE_EMA, PRICE_CLOSE, 0);
    double slowMA = iMA(Symbol(), PERIOD_CURRENT, 21, 0, MODE_EMA, PRICE_CLOSE, 0);
    
    if(fastMA > slowMA) return 1;
    if(fastMA < slowMA) return -1;
+   return 0;'''
+        
+        else: # MQL5 logic using Handles and CopyBuffer
+            if strategy_type == 'trend':
+                return '''   static int hFast = INVALID_HANDLE;
+   static int hSlow = INVALID_HANDLE;
+   if(hFast == INVALID_HANDLE) hFast = iMA(_Symbol, _Period, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE);
+   if(hSlow == INVALID_HANDLE) hSlow = iMA(_Symbol, _Period, InpSlowEMA, 0, MODE_EMA, PRICE_CLOSE);
+   
+   double f[2], s[2];
+   if(CopyBuffer(hFast, 0, 0, 2, f) < 2 || CopyBuffer(hSlow, 0, 0, 2, s) < 2) return 0;
+   
+   // In MQL5 CopyBuffer: [0] is oldest (previous), [1] is newest (current)
+   if(f[1] > s[1] && f[0] <= s[0]) return 1;
+   if(f[1] < s[1] && f[0] >= s[0]) return -1;
+   return 0;'''
+            
+            elif strategy_type == 'reversal':
+                return '''   static int hRsi = INVALID_HANDLE;
+   if(hRsi == INVALID_HANDLE) hRsi = iRSI(_Symbol, _Period, InpRsiPeriod, PRICE_CLOSE);
+   
+   double r[1];
+   if(CopyBuffer(hRsi, 0, 0, 1, r) < 1) return 0;
+   
+   if(r[0] < InpOversold) return 1;
+   if(r[0] > InpOverbought) return -1;
+   return 0;'''
+            
+            elif strategy_type in ['donchian', 'breakout']:
+                return '''   double high[1], low[1], close[1];
+   int highest_idx = iHighest(_Symbol, _Period, MODE_HIGH, InpDonchianPeriod, 1);
+   int lowest_idx = iLowest(_Symbol, _Period, MODE_LOW, InpDonchianPeriod, 1);
+   
+   CopyHigh(_Symbol, _Period, highest_idx, 1, high);
+   CopyLow(_Symbol, _Period, lowest_idx, 1, low);
+   CopyClose(_Symbol, _Period, 0, 1, close);
+   
+   if(close[0] > high[0]) return 1;
+   if(close[0] < low[0]) return -1;
+   return 0;'''
+
+            elif strategy_type == 'scalping':
+                return '''   static int hFast = INVALID_HANDLE;
+   static int hSlow = INVALID_HANDLE;
+   static int hRsi = INVALID_HANDLE;
+   if(hFast == INVALID_HANDLE) hFast = iMA(_Symbol, _Period, 5, 0, MODE_EMA, PRICE_CLOSE);
+   if(hSlow == INVALID_HANDLE) hSlow = iMA(_Symbol, _Period, 13, 0, MODE_EMA, PRICE_CLOSE);
+   if(hRsi == INVALID_HANDLE) hRsi = iRSI(_Symbol, _Period, 7, PRICE_CLOSE);
+   
+   double f[1], s[1], r[1];
+   if(CopyBuffer(hFast, 0, 0, 1, f) < 1 || CopyBuffer(hSlow, 0, 0, 1, s) < 1 || CopyBuffer(hRsi, 0, 0, 1, r) < 1) return 0;
+   
+   if(f[0] > s[0] && r[0] < 70) return 1;
+   if(f[0] < s[0] && r[0] > 30) return -1;
+   return 0;'''
+
+            else:
+                return '''   static int hFast = INVALID_HANDLE;
+   static int hSlow = INVALID_HANDLE;
+   if(hFast == INVALID_HANDLE) hFast = iMA(_Symbol, _Period, 9, 0, MODE_EMA, PRICE_CLOSE);
+   if(hSlow == INVALID_HANDLE) hSlow = iMA(_Symbol, _Period, 21, 0, MODE_EMA, PRICE_CLOSE);
+   
+   double f[1], s[1];
+   if(CopyBuffer(hFast, 0, 0, 1, f) < 1 || CopyBuffer(hSlow, 0, 0, 1, s) < 1) return 0;
+   
+   if(f[0] > s[0]) return 1;
+   if(f[0] < s[0]) return -1;
    return 0;'''
     
     def generate_json(self, strategy: Dict) -> str:
