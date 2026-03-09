@@ -83,19 +83,40 @@ async def get_symbols():
     return [{"name": s} for s in sorted_symbols[:100]]
 
 
+def get_count_from_period(period: str, timeframe: str) -> int:
+    """Calculate needed candles for a given period and timeframe."""
+    # Mercado tradicional = ~22 dias úteis por mês
+    period_map = {'1M': 22, '3M': 65, '6M': 130, '1Y': 260, '2Y': 520}
+    days = period_map.get(period or '6M', 130)
+    
+    if timeframe.startswith('M'):
+        mins = int(timeframe[1:])
+        return min(50000, (days * 24 * 60) // mins)
+    elif timeframe.startswith('H'):
+        hours = int(timeframe[1:])
+        return min(15000, (days * 24) // hours)
+    elif timeframe == 'D1':
+        return days
+    return 1000
+
 @app.get("/api/ohlcv")
-async def get_ohlcv(symbol: str, timeframe: str, count: int = 500):
+async def get_ohlcv(symbol: str, timeframe: str, period: str = None, count: int = None):
+    if not count:
+        count = get_count_from_period(period, timeframe)
     df = mt5_bridge.get_ohlcv(symbol, timeframe, count=count)
     if df is None or df.empty:
-        return [] # Return empty list instead of 500 to keep frontend alive
+        return []
     data = df.copy()
     data['time'] = data['time'].astype(int) // 10**6
     return data.to_dict(orient='records')
 
 
 @app.get("/api/analysis")
-async def get_analysis(symbol: str, timeframe: str):
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=200)
+async def get_analysis(symbol: str, timeframe: str, period: str = None):
+    count = get_count_from_period(period, timeframe)
+    # Use at least 200 for analysis
+    count = max(count, 200)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=count)
     if df is None or df.empty:
         return {
             "regime": {"type": "undefined", "confidence": 0, "indicators": {}}, 
@@ -127,28 +148,38 @@ async def get_strategies(symbol: str, timeframe: str):
 @app.post("/api/validate")
 async def run_validation(payload: Dict):
     """Run WFA, CPCV, and Monte Carlo on a strategy."""
-    symbol = payload.get("symbol", "EURUSD")
-    timeframe = payload.get("timeframe", "H1")
-    strategy_type = payload.get("type", "trend")
-    params = payload.get("parameters", {})
+    try:
+        symbol = payload.get("symbol", "EURUSD")
+        timeframe = payload.get("timeframe", "H1")
+        strategy_type = payload.get("type", "trend")
+        params = payload.get("parameters", {})
 
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=2000)
-    if df is None:
-        raise HTTPException(status_code=500, detail="Failed to fetch data")
+        df = mt5_bridge.get_ohlcv(symbol, timeframe, count=2000)
+        if df is None or df.empty:
+            raise HTTPException(status_code=400, detail="Sem dados disponíveis no MT5")
 
-    wfa = backtest_engine.run_wfa(df, strategy_type, params, symbol_name=symbol)
-    cpcv = backtest_engine.run_cpcv(df, strategy_type, params, symbol_name=symbol)
-    mc = backtest_engine.run_monte_carlo(df, strategy_type, params, symbol_name=symbol, n_simulations=5000)
+        wfa = backtest_engine.run_wfa(df, strategy_type, params, symbol_name=symbol)
+        cpcv = backtest_engine.run_cpcv(df, strategy_type, params, symbol_name=symbol)
+        mc = backtest_engine.run_monte_carlo(df, strategy_type, params, symbol_name=symbol, n_simulations=5000)
 
-    # PBO approximation from CPCV sharpe variance
-    pbo = min(float(cpcv['sharpeStd'] / (abs(cpcv['avgSharpe']) + 1e-10) * 100), 100)
+        # PBO approximation from CPCV sharpe variance
+        avg_sharpe = cpcv.get('avgSharpe', 0)
+        sharpe_std = cpcv.get('sharpeStd', 0)
+        pbo = min(float(sharpe_std / (abs(avg_sharpe) + 1e-10) * 100), 100)
 
-    return {
-        "wfa": wfa,
-        "cpcv": cpcv,
-        "monteCarlo": mc,
-        "pbo": round(pbo, 1),
-    }
+        return {
+            "wfa": wfa,
+            "cpcv": cpcv,
+            "monteCarlo": mc,
+            "pbo": round(pbo, 1),
+        }
+    except Exception as e:
+        logger.error(f"Erro na validação: {e}", exc_info=True)
+        return {
+            "error": str(e),
+            "status": "failed",
+            "message": "Falha no processamento da estratégia. Verifique os parâmetros."
+        }
 
 
 # ──────────────────────────────────────────
@@ -247,11 +278,14 @@ async def optimize(payload: Dict):
     strategy_type = payload.get("type", "trend")
     param_ranges = payload.get("paramRanges", {})
     criteria = payload.get("criteria", "sharpe")
+    period = payload.get("period", "6M")
     
-    logger.info(f"Otimizador: Recebida requisição para {strategy_type} em {symbol}")
+    count = get_count_from_period(period, timeframe)
+    
+    logger.info(f"Otimizador: Recebida requisição para {strategy_type} em {symbol} (period={period}, count={count})")
     
     # 1. Get Data
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=1000)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=count)
     if df is None or df.empty:
         raise HTTPException(status_code=400, detail="Sem dados disponíveis no MT5")
         

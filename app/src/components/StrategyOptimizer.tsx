@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -146,6 +146,24 @@ export function StrategyOptimizer({
     }
   }, [open, strategy, initializeSmartRanges]); // Removido parameterRanges para evitar loop
 
+  const totalCombinations = useMemo(() => {
+    let total = 1;
+    let hasVariables = false;
+    Object.entries(parameterRanges).forEach(([key, range]) => {
+      if (enabledParams[key]) {
+        const min = Number(range.min);
+        const max = Number(range.max);
+        const step = Number(range.step);
+        if (!isNaN(min) && !isNaN(max) && !isNaN(step) && step > 0 && max >= min) {
+          const steps = Math.floor((max - min) / step) + 1;
+          total *= steps;
+          hasVariables = true;
+        }
+      }
+    });
+    return hasVariables ? total : 0;
+  }, [parameterRanges, enabledParams]);
+
   const startOptimization = async () => {
     if (!strategy) return;
 
@@ -161,21 +179,6 @@ export function StrategyOptimizer({
     setProgress(10);
 
     try {
-      // Calcular count aproximado baseado no período e timeframe
-      let count = 1000;
-      const periodMap: Record<string, number> = { '1M': 30, '3M': 90, '6M': 180, '1Y': 365, '2Y': 730 };
-      const days = periodMap[period] || 180;
-
-      if (timeframe.value.startsWith('M')) {
-        const mins = parseInt(timeframe.value.substring(1));
-        count = Math.min(10000, Math.floor((days * 24 * 60) / mins));
-      } else if (timeframe.value.startsWith('H')) {
-        const hours = parseInt(timeframe.value.substring(1));
-        count = Math.min(5000, Math.floor((days * 24) / hours));
-      } else if (timeframe.value === 'D1') {
-        count = days;
-      }
-
       const finalRanges: Record<string, any> = {};
       Object.entries(parameterRanges).forEach(([key, range]) => {
         if (enabledParams[key]) {
@@ -196,11 +199,11 @@ export function StrategyOptimizer({
           type: strategy.type,
           paramRanges: finalRanges,
           criteria: optimizationCriteria,
-          count: count
+          period: period
         }),
       });
 
-      setCurrentPhase('Processando Backtests + WFA + Monte Carlo (2000+ combinações)...');
+      setCurrentPhase(`Processando Backtests + WFA + Monte Carlo (${totalCombinations} combinações)...`);
       setProgress(50);
 
       if (!response.ok) {
@@ -471,10 +474,15 @@ export function StrategyOptimizer({
               <div className="flex justify-end pt-2">
                 <Button
                   onClick={startOptimization}
+                  disabled={totalCombinations === 0 || totalCombinations > 500000}
                   className="bg-blue-600 hover:bg-blue-700 h-11 px-10 shadow-lg shadow-blue-500/20 font-semibold"
                 >
                   <Zap className="h-4 w-4 mr-2" />
-                  Iniciar Otimização com 2000 Combinações
+                  {totalCombinations === 0
+                    ? "Configuração Inválida"
+                    : totalCombinations > 500000
+                      ? `Muitas combinações (${totalCombinations.toLocaleString('pt-BR')}) - Máx 500k`
+                      : `Iniciar Otimização (${totalCombinations.toLocaleString('pt-BR')} params)`}
                 </Button>
               </div>
             </div>
