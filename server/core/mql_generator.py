@@ -377,6 +377,8 @@ void ModifyPosition(double newSL)
         # Gerar inputs com defaults explícitos
         parameters = strategy.get('parameters') or {}
         
+        strategy_type = str(strategy.get('type') or 'trend').lower()
+        
         if strategy_type == 'trend':
             parameters.setdefault("FastEMA", 9)
             parameters.setdefault("SlowEMA", 21)
@@ -384,6 +386,8 @@ void ModifyPosition(double newSL)
             parameters.setdefault("RsiPeriod", 14)
             parameters.setdefault("Oversold", 30)
             parameters.setdefault("Overbought", 70)
+        elif strategy_type in ['donchian', 'breakout']:
+            parameters.setdefault("DonchianPeriod", 20)
             
         inputs_str = self._generate_inputs(parameters, version)
         
@@ -453,6 +457,24 @@ void ModifyPosition(double newSL)
    
    if(rsi < InpOversold) return 1;
    if(rsi > InpOverbought) return -1;
+   return 0;'''
+        
+        elif strategy_type in ['donchian', 'breakout']:
+            return '''   double upper = iHigh(Symbol(), PERIOD_CURRENT, iHighest(Symbol(), PERIOD_CURRENT, MODE_HIGH, InpDonchianPeriod, 1));
+   double lower = iLow(Symbol(), PERIOD_CURRENT, iLowest(Symbol(), PERIOD_CURRENT, MODE_LOW, InpDonchianPeriod, 1));
+   double close = iClose(Symbol(), PERIOD_CURRENT, 0);
+   
+   if(close > upper) return 1;
+   if(close < lower) return -1;
+   return 0;'''
+        
+        elif strategy_type == 'scalping':
+            return '''   double fastMA = iMA(Symbol(), PERIOD_CURRENT, 5, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double slowMA = iMA(Symbol(), PERIOD_CURRENT, 13, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double rsi = iRSI(Symbol(), PERIOD_CURRENT, 7, PRICE_CLOSE, 0);
+   
+   if(fastMA > slowMA && rsi < 70) return 1;
+   if(fastMA < slowMA && rsi > 30) return -1;
    return 0;'''
         
         else:
