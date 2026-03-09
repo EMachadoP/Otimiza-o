@@ -121,50 +121,40 @@ void OpenBuyOrder()
 //+------------------------------------------------------------------+
 void OpenSellOrder()
 {
-   double price = Bid;
-   double sl = price + InpStopLoss * Point;
-   double tp = price - InpTakeProfit * Point;
+   double atr = iATR(Symbol(), PERIOD_CURRENT, InpATRPeriod, 1);
+   if(atr <= 0) return;
+   double slDist = atr * InpSLMultiplier;
+   double tpDist = atr * InpTPMultiplier;
    
-   g_ticket = OrderSend(Symbol(), OP_SELL, InpLotSize, price, 10, sl, tp, "<<name>>", InpMagicNumber, 0, clrRed);
-   if(g_ticket < 0)
-   {
-      Print("OrderSend error: ", GetLastError());
-   }
-   else
-   {
-      Print("Sell order opened: ", g_ticket);
-   }
+   double sl = Bid + slDist;
+   double tp = Bid - tpDist;
+   
+   g_ticket = OrderSend(Symbol(), OP_SELL, InpLotSize, Bid, 10, sl, tp, "<<name>>", InpMagicNumber, 0, clrRed);
+   if(g_ticket < 0) Print("Sell error: ", GetLastError());
 }
 
-//+------------------------------------------------------------------+
-//| Manage Open Position                                             |
 //+------------------------------------------------------------------+
 void ManageOpenPosition()
 {
    if(!InpUseTrailingStop) return;
-   
-   if(OrderSelect(g_ticket, SELECT_BY_TICKET))
+   if(!OrderSelect(g_ticket, SELECT_BY_TICKET)) return;
+
+   double atr = iATR(Symbol(), PERIOD_CURRENT, InpATRPeriod, 1);
+   if(atr <= 0) return;
+   double trailDist = atr * InpTrailMultiplier;
+   double currentSL = OrderStopLoss();
+
+   if(OrderType() == OP_BUY)
    {
-      double openPrice = OrderOpenPrice();
-      double currentSL = OrderStopLoss();
-      double newSL = 0;
-      
-      if(OrderType() == OP_BUY)
-      {
-         newSL = Bid - InpTrailingStop * Point;
-         if(newSL > currentSL)
-         {
-            OrderModify(g_ticket, openPrice, newSL, OrderTakeProfit(), 0, clrBlue);
-         }
-      }
-      else if(OrderType() == OP_SELL)
-      {
-         newSL = Ask + InpTrailingStop * Point;
-         if(newSL < currentSL || currentSL == 0)
-         {
-            OrderModify(g_ticket, openPrice, newSL, OrderTakeProfit(), 0, clrBlue);
-         }
-      }
+      double newSL = Bid - trailDist;
+      if(newSL > currentSL && newSL > OrderOpenPrice())
+         OrderModify(g_ticket, OrderOpenPrice(), newSL, OrderTakeProfit(), 0, clrBlue);
+   }
+   else if(OrderType() == OP_SELL)
+   {
+      double newSL = Ask + trailDist;
+      if((newSL < currentSL || currentSL == 0) && newSL < OrderOpenPrice())
+         OrderModify(g_ticket, OrderOpenPrice(), newSL, OrderTakeProfit(), 0, clrBlue);
    }
 }
 //+------------------------------------------------------------------+
@@ -179,21 +169,44 @@ void ManageOpenPosition()
 #property link      "https://tradestrategist.com"
 #property version   "1.00"
 
+#include <Trade/Trade.mqh>
+
 //--- Input Parameters
 <<inputs>>
 
 //--- Global Variables
-ulong g_ticket = 0;
+CTrade g_trade;
 datetime g_lastBarTime = 0;
+int g_hATR = INVALID_HANDLE;
+<<global_vars>>
+
+//--- Performance & Dashboard Vars
+<<stats_vars>>
+<<dashboard_vars>>
+<<news_vars>>
+<<global_limits_vars>>
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("<<name>> EA initialized");
-   Print("Strategy Type: <<type>>");
-   Print("Indicators: <<indicators>>");
+   // Setup Trade Class
+   g_trade.SetExpertMagicNumber(InpMagicNumber);
+   g_trade.SetDeviationInPoints(50);
+
+   // ATR for adaptive SL/TP
+   g_hATR = iATR(Symbol(), PERIOD_CURRENT, InpATRPeriod);
+   if(g_hATR == INVALID_HANDLE)
+   { Print("ATR handle error: ", GetLastError()); return(INIT_FAILED); }
+   
+<<init_logic>>
+
+   // Initialize stats and dashboard
+   LoadHistoryStats();
+   CreatePanel();
+   
+   Print("<<name>> EA initialized | <<type>> | <<indicators>>");
    return(INIT_SUCCEEDED);
 }
 
@@ -202,7 +215,10 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   Print("<<name>> EA deinitialized. Reason: ", reason);
+   if(g_hATR != INVALID_HANDLE) IndicatorRelease(g_hATR);
+<<deinit_logic>>
+   DeletePanel();
+   Print("<<name>> removed. Reason: ", reason);
 }
 
 //+------------------------------------------------------------------+
@@ -210,16 +226,41 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+   // Check global limits (Equity protective)
+   CheckGlobalLimits();
+
    // Check for new bar
    datetime currentBarTime = iTime(Symbol(), PERIOD_CURRENT, 0);
-   if(currentBarTime == g_lastBarTime) return;
-   g_lastBarTime = currentBarTime;
+   bool isNewBar = (currentBarTime != g_lastBarTime);
    
+   if(isNewBar)
+   {
+      g_lastBarTime = currentBarTime;
+      
+      // Update news filter and stats on each new bar
+      CheckNewsCalendar();
+      UpdateStats();
+      UpdatePanel();
+   }
+   
+   // Update dashboard prices/equity on each tick (lightweight)
+   UpdatePanelPrices();
+
+   // News Filter Check
+   if(InpUseNewsFilter && g_newsActive) return;
+
    // Check spread
-   if(SymbolInfoInteger(Symbol(), SYMBOL_SPREAD) > InpMaxSpread) return;
+   if(InpMaxSpread > 0 && (int)SymbolInfoInteger(Symbol(), SYMBOL_SPREAD) > InpMaxSpread) return;
    
-   // Check for open positions
-   if(PositionSelect(Symbol()))
+   // Check for open positions (Filter by Magic and Symbol)
+   bool hasPosition = false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(PositionGetSymbol(i) == Symbol() && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+      { hasPosition = true; break; }
+   }
+
+   if(hasPosition)
    {
       ManageOpenPosition();
       return;
@@ -230,11 +271,11 @@ void OnTick()
    
    if(signal > 0) // Buy signal
    {
-      OpenBuyOrder();
+      OpenOrder(ORDER_TYPE_BUY);
    }
    else if(signal < 0) // Sell signal
    {
-      OpenSellOrder();
+      OpenOrder(ORDER_TYPE_SELL);
    }
 }
 
@@ -247,70 +288,33 @@ int CheckEntrySignal()
 }
 
 //+------------------------------------------------------------------+
-//| Open Buy Order                                                   |
+//| Open Order (ATR-based SL/TP)                                     |
 //+------------------------------------------------------------------+
-void OpenBuyOrder()
+void OpenOrder(ENUM_ORDER_TYPE type)
 {
-   MqlTradeRequest request = {};
-   MqlTradeResult result = {};
-   
-   double price = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
-   double sl = price - InpStopLoss * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-   double tp = price + InpTakeProfit * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-   
-   request.action = TRADE_ACTION_DEAL;
-   request.symbol = Symbol();
-   request.volume = InpLotSize;
-   request.type = ORDER_TYPE_BUY;
-   request.price = price;
-   request.sl = sl;
-   request.tp = tp;
-   request.deviation = 10;
-   request.magic = InpMagicNumber;
-   request.comment = "<<name>>";
-   
-   if(!OrderSend(request, result))
-   {
-      Print("OrderSend error: ", GetLastError());
-   }
-   else
-   {
-      g_ticket = result.order;
-      Print("Buy order opened: ", result.order);
-   }
-}
+   double atr[1];
+   ArraySetAsSeries(atr, true);
+   if(CopyBuffer(g_hATR, 0, 0, 1, atr) < 1 || atr[0] <= 0) return;
 
-//+------------------------------------------------------------------+
-//| Open Sell Order                                                  |
-//+------------------------------------------------------------------+
-void OpenSellOrder()
-{
-   MqlTradeRequest request = {};
-   MqlTradeResult result = {};
-   
-   double price = SymbolInfoDouble(Symbol(), SYMBOL_BID);
-   double sl = price + InpStopLoss * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-   double tp = price - InpTakeProfit * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-   
-   request.action = TRADE_ACTION_DEAL;
-   request.symbol = Symbol();
-   request.volume = InpLotSize;
-   request.type = ORDER_TYPE_SELL;
-   request.price = price;
-   request.sl = sl;
-   request.tp = tp;
-   request.deviation = 10;
-   request.magic = InpMagicNumber;
-   request.comment = "<<name>>";
-   
-   if(!OrderSend(request, result))
+   double slDist = atr[0] * InpSLMultiplier;
+   double tpDist = atr[0] * InpTPMultiplier;
+   int digits = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
+
+   if(type == ORDER_TYPE_BUY)
    {
-      Print("OrderSend error: ", GetLastError());
+      double price = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
+      double sl = (slDist > 0) ? NormalizeDouble(price - slDist, digits) : 0;
+      double tp = (tpDist > 0) ? NormalizeDouble(price + tpDist, digits) : 0;
+      if(!g_trade.Buy(InpLotSize, Symbol(), price, sl, tp, "<<name>>"))
+         Print("Buy error: ", GetLastError());
    }
    else
    {
-      g_ticket = result.order;
-      Print("Sell order opened: ", result.order);
+      double price = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+      double sl = (slDist > 0) ? NormalizeDouble(price + slDist, digits) : 0;
+      double tp = (tpDist > 0) ? NormalizeDouble(price - tpDist, digits) : 0;
+      if(!g_trade.Sell(InpLotSize, Symbol(), price, sl, tp, "<<name>>"))
+         Print("Sell error: ", GetLastError());
    }
 }
 
@@ -321,46 +325,41 @@ void ManageOpenPosition()
 {
    if(!InpUseTrailingStop) return;
    
-   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-   double currentSL = PositionGetDouble(POSITION_SL);
-   double newSL = 0;
-   
-   if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+   double atr[1];
+   ArraySetAsSeries(atr, true);
+   if(CopyBuffer(g_hATR, 0, 0, 1, atr) < 1 || atr[0] <= 0) return;
+   double trailDist = atr[0] * InpTrailMultiplier;
+   int digits = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      newSL = SymbolInfoDouble(Symbol(), SYMBOL_BID) - InpTrailingStop * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-      if(newSL > currentSL)
+      if(PositionGetSymbol(i) != Symbol()) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+
+      double currentSL = PositionGetDouble(POSITION_SL);
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      ulong  ticket    = PositionGetInteger(POSITION_TICKET);
+
+      if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
       {
-         ModifyPosition(newSL);
+         double newSL = NormalizeDouble(SymbolInfoDouble(Symbol(), SYMBOL_BID) - trailDist, digits);
+         if(newSL > currentSL && newSL > openPrice)
+            g_trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
       }
-   }
-   else
-   {
-      newSL = SymbolInfoDouble(Symbol(), SYMBOL_ASK) + InpTrailingStop * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-      if(newSL < currentSL || currentSL == 0)
+      else
       {
-         ModifyPosition(newSL);
+         double newSL = NormalizeDouble(SymbolInfoDouble(Symbol(), SYMBOL_ASK) + trailDist, digits);
+         if((newSL < currentSL || currentSL == 0) && newSL < openPrice)
+            g_trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
       }
    }
 }
 
-//+------------------------------------------------------------------+
-//| Modify Position                                                  |
-//+------------------------------------------------------------------+
-void ModifyPosition(double newSL)
-{
-   MqlTradeRequest request = {};
-   MqlTradeResult result = {};
-   
-   request.action = TRADE_ACTION_SLTP;
-   request.position = PositionGetInteger(POSITION_TICKET);
-   request.sl = newSL;
-   request.tp = PositionGetDouble(POSITION_TP);
-   
-   if(!OrderSend(request, result))
-   {
-      Print("OrderModify error: ", GetLastError());
-   }
-}
+//--- Helper Modules logic
+<<stats_logic>>
+<<dashboard_logic>>
+<<news_logic>>
+<<global_limits_logic>>
 //+------------------------------------------------------------------+
 '''
     
@@ -381,44 +380,77 @@ void ModifyPosition(double newSL)
             
         # Gerar inputs com defaults explícitos
         parameters = strategy.get('parameters') or {}
-        
-        # FIX: Coerce parameter values to numeric types
-        # JSON payloads may send numbers as strings
         parameters = self._coerce_params(parameters)
         
         strategy_type = str(strategy.get('type') or 'trend').lower()
         
+        # Default parameter stabilization
+        # Default parameter stabilization - Use consistent camelCase
         if strategy_type == 'trend':
-            parameters.setdefault("FastEMA", 9)
-            parameters.setdefault("SlowEMA", 21)
+            parameters.setdefault("fastEMA", 9)
+            parameters.setdefault("slowEMA", 21)
         elif strategy_type == 'reversal':
-            parameters.setdefault("RsiPeriod", 14)
-            parameters.setdefault("Oversold", 30)
-            parameters.setdefault("Overbought", 70)
+            parameters.setdefault("rsiPeriod", 14)
+            parameters.setdefault("oversold", 30)
+            parameters.setdefault("overbought", 70)
         elif strategy_type == 'mean_reversion':
             parameters.setdefault("period", 20)
             parameters.setdefault("std", 2.0)
         elif strategy_type in ['donchian', 'breakout']:
-            parameters.setdefault("DonchianPeriod", 20)
+            parameters.setdefault("donchianPeriod", 20)
             
         inputs_str = self._generate_inputs(parameters, version)
         
-        # Gerar lógica de sinais
-        signal_logic = self._generate_signal_logic(strategy_type, version)
+        # Gerar componentes de lógica (pode ser dict para MQL5)
+        logic_components = self._generate_signal_logic(strategy_type, version)
+        
+        if isinstance(logic_components, dict):
+            signal_logic = logic_components.get('logic', '')
+            global_vars = logic_components.get('global_vars', '')
+            init_logic = logic_components.get('init_logic', '')
+            deinit_logic = logic_components.get('deinit_logic', '')
+        else:
+            signal_logic = logic_components
+            global_vars = ''
+            init_logic = ''
+            deinit_logic = ''
         
         indicators = strategy.get('indicators') or []
-        
         name = str(strategy.get('name') or 'CustomStrategy').replace(' ', '_')
         timestamp = str(pd.Timestamp.now())
         indicators_str = ', '.join(str(i) for i in indicators)
         
-        # FIX: Use <<placeholder>> syntax to avoid conflicts with MQL braces
         output = template.replace('<<name>>', name)
         output = output.replace('<<timestamp>>', timestamp)
         output = output.replace('<<type>>', strategy_type)
         output = output.replace('<<indicators>>', indicators_str)
         output = output.replace('<<inputs>>', inputs_str)
         output = output.replace('<<signal_logic>>', signal_logic)
+        
+        if version == 'mql5':
+            output = output.replace('<<global_vars>>', global_vars)
+            output = output.replace('<<init_logic>>', init_logic)
+            output = output.replace('<<deinit_logic>>', deinit_logic)
+            
+            # Assembly of new modules
+            stats = self._get_stats_module()
+            dash = self._get_dashboard_module()
+            news = self._get_news_module()
+            glim = self._get_global_limits_module()
+            
+            output = output.replace('<<stats_vars>>', stats['vars'])
+            output = output.replace('<<stats_logic>>', stats['logic'])
+            output = output.replace('<<dashboard_vars>>', dash['vars'])
+            output = output.replace('<<dashboard_logic>>', dash['logic'])
+            output = output.replace('<<news_vars>>', news['vars'])
+            output = output.replace('<<news_logic>>', news['logic'])
+            output = output.replace('<<global_limits_vars>>', glim['vars'])
+            output = output.replace('<<global_limits_logic>>', glim['logic'])
+        else:
+            # For MQL4, we might want to clear these or handle them if we add MQL4 support for them later
+            for tag in ['stats', 'dashboard', 'news', 'global_limits']:
+                output = output.replace(f'<<{tag}_vars>>', '')
+                output = output.replace(f'<<{tag}_logic>>', '')
         
         return output
     
@@ -451,32 +483,232 @@ void ModifyPosition(double newSL)
         
         # Parâmetros padrão
         lines.append('input double   InpLotSize = 0.1;        // Lot Size')
-        lines.append(f'input int      InpStopLoss = {parameters.get("stopLoss", 50)};        // Stop Loss (pips)')
-        lines.append(f'input int      InpTakeProfit = {parameters.get("takeProfit", 100)};     // Take Profit (pips)')
+        lines.append('input int      InpATRPeriod = 14;       // ATR Period')
+        lines.append(f'input double   InpSLMultiplier = {parameters.get("slMultiplier", 1.5)};     // SL = ATR x Multiplier')
+        lines.append(f'input double   InpTPMultiplier = {parameters.get("tpMultiplier", 2.0)};     // TP = ATR x Multiplier')
         lines.append('input int      InpMaxSpread = 30;       // Max Spread (points)')
         lines.append('input ulong    InpMagicNumber = 12345;  // Magic Number')
         lines.append('input bool     InpUseTrailingStop = true; // Use Trailing Stop')
-        lines.append('input int      InpTrailingStop = 30;    // Trailing Stop (pips)')
+        lines.append(f'input double   InpTrailMultiplier = {parameters.get("trailMultiplier", 1.0)}; // Trail = ATR x Multiplier')
         
+        if version == 'mql5':
+            lines.append('')
+            lines.append('input group "=== News Filter ==="')
+            lines.append('input bool     InpUseNewsFilter = true; // Use News Filter')
+            lines.append('input int      InpNewsBefore = 30;      // Mins Before News')
+            lines.append('input int      InpNewsAfter = 15;       // Mins After News')
+            
+            lines.append('')
+            lines.append('input group "=== Account Protection ==="')
+            lines.append('input double   InpGlobalSL = 0;         // Global SL $ (0=off)')
+            lines.append('input double   InpGlobalTP = 0;         // Global TP $ (0=off)')
+            lines.append('input double   InpMaxDD = 20.0;         // Max Drawdown % (0=off)')
+
         lines.append('')
         if version == 'mql5':
             lines.append('input group "=== Strategy Parameters ==="')
         
         # Parâmetros da estratégia
         for name, value in parameters.items():
-            if name in ["stopLoss", "takeProfit"]:
+            if name in ["stopLoss", "takeProfit", "slMultiplier", "tpMultiplier", "trailMultiplier"]:
                 continue
+            
+            # Garantir que o nome tenha o prefixo Inp mas não duplicado
+            mql_name = name
+            if not name.lower().startswith('inp'):
+                mql_name = 'Inp' + name[0].upper() + name[1:]
+            
             if isinstance(value, int):
-                lines.append(f'input int      Inp{name} = {value};        // {name}')
+                lines.append(f'input int      {mql_name} = {value};        // {name}')
             elif isinstance(value, float):
-                lines.append(f'input double   Inp{name} = {value};        // {name}')
-            else:
-                # Fallback: treat as string comment for unsupported types
-                logger.warning(f"Skipping non-numeric parameter: {name}={value!r}")
+                lines.append(f'input double   {mql_name} = {value};        // {name}')
+            elif isinstance(value, bool):
+                lines.append(f'input bool     {mql_name} = {"true" if value else "false"};        // {name}')
         
         return '\n'.join(lines)
+
+    # ──────────────────────────────────────────────────────────────────
+    #  MQL5 Helper Modules
+    # ──────────────────────────────────────────────────────────────────
+
+    def _get_stats_module(self) -> Dict[str, str]:
+        return {
+            'vars': '''int    g_totalTrades = 0;
+int    g_winTrades   = 0;
+int    g_lossTrades  = 0;
+double g_totalProfit = 0;
+double g_totalLoss   = 0;
+double g_peakBalance  = 0;
+double g_currentDD    = 0;
+double g_maxDrawdown  = 0;''',
+            'logic': '''void LoadHistoryStats()
+{
+   g_totalTrades = 0; g_winTrades = 0; g_lossTrades = 0; g_totalProfit = 0; g_totalLoss = 0;
+   if(!HistorySelect(0, TimeCurrent())) return;
+   int total = HistoryDealsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0 || HistoryDealGetInteger(ticket, DEAL_MAGIC) != InpMagicNumber || HistoryDealGetString(ticket, DEAL_SYMBOL) != Symbol()) continue;
+      long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT) continue;
+      double dealPL = HistoryDealGetDouble(ticket, DEAL_PROFIT) + HistoryDealGetDouble(ticket, DEAL_SWAP) + HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+      g_totalTrades++;
+      if(dealPL >= 0) { g_winTrades++; g_totalProfit += dealPL; }
+      else { g_lossTrades++; g_totalLoss += MathAbs(dealPL); }
+   }
+}
+
+void UpdateStats()
+{
+   LoadHistoryStats();
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(g_peakBalance == 0) g_peakBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(equity > g_peakBalance) g_peakBalance = equity;
+   g_currentDD = (g_peakBalance > 0) ? (g_peakBalance - equity) / g_peakBalance * 100.0 : 0;
+   if(g_currentDD > g_maxDrawdown) g_maxDrawdown = g_currentDD;
+}'''
+        }
+
+    def _get_dashboard_module(self) -> Dict[str, str]:
+        return {
+            'vars': 'string g_panelPrefix = "MYPANEL_";',
+            'logic': '''void CreatePanel()
+{
+   int panelX = 10, panelY = 30, panelW = 280, panelH = 300;
+   CreateRect(g_panelPrefix + "BG", panelX, panelY, panelW, panelH, C'15,15,25', C'40,120,200');
+   CreateRect(g_panelPrefix + "Header", panelX, panelY, panelW, 42, C'20,80,180', C'20,80,180');
+   CreateLabel(g_panelPrefix + "Title", panelX + 12, panelY + 8, "TRADE STRATEGIST", 12, "Consolas", clrWhite, true);
+   CreateLabel(g_panelPrefix + "Version", panelX + 12, panelY + 26, "v1.0 | " + Symbol() + " " + EnumToString(Period()), 8, "Consolas", C'140,180,255', false);
+   int y = panelY + 52;
+   CreateLabel(g_panelPrefix + "SecPerf", panelX + 12, y, "── PERFORMANCE ──", 8, "Consolas", C'80,160,255', true);
+   y += 18;
+   CreateLabel(g_panelPrefix + "lProfit",  panelX + 12,  y, "Profit: $0.00", 9, "Consolas", C'0,200,120', false);
+   CreateLabel(g_panelPrefix + "lWinRate", panelX + 160, y, "WR: 0%", 9, "Consolas", C'180,200,220', false);
+   y += 16;
+   CreateLabel(g_panelPrefix + "lTrades", panelX + 12, y, "Trades: 0 (W:0 L:0)", 9, "Consolas", C'180,200,220', false);
+   y += 16;
+   CreateLabel(g_panelPrefix + "lDD",     panelX + 12, y, "DD: 0.0% | Max: 0.0%", 9, "Consolas", C'180,200,220', false);
+   y += 16;
+   CreateLabel(g_panelPrefix + "lEquity", panelX + 12, y, "Equity: $0.00", 9, "Consolas", C'180,200,220', false);
+   ChartRedraw();
+}
+
+void UpdatePanel()
+{
+   double netProfit = g_totalProfit - g_totalLoss;
+   color profitColor = (netProfit >= 0) ? C'0,220,120' : C'255,60,60';
+   UpdateLabel(g_panelPrefix + "lProfit", "Profit: $" + DoubleToString(netProfit, 2), profitColor);
+   double winRate = (g_totalTrades > 0) ? (double)g_winTrades / g_totalTrades * 100.0 : 0;
+   UpdateLabel(g_panelPrefix + "lWinRate", "WR: " + DoubleToString(winRate, 1) + "%");
+   UpdateLabel(g_panelPrefix + "lTrades", "Trades: " + IntegerToString(g_totalTrades) + " (W:" + IntegerToString(g_winTrades) + " L:" + IntegerToString(g_lossTrades) + ")");
+   color ddColor = (g_currentDD > 10) ? C'255,60,60' : C'180,200,220';
+   UpdateLabel(g_panelPrefix + "lDD", "DD: " + DoubleToString(g_currentDD, 1) + "% | Max: " + DoubleToString(g_maxDrawdown, 1) + "%", ddColor);
+   UpdatePanelPrices();
+}
+
+void UpdatePanelPrices()
+{
+   UpdateLabel(g_panelPrefix + "lEquity", "Eq: $" + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2));
+   ChartRedraw();
+}
+
+void CreateRect(string name, int x, int y, int w, int h, color bg, color border)
+{
+   ObjectDelete(0, name);
+   ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x); ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w); ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg); ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, border);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT); ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false); ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+}
+
+void CreateLabel(string name, int x, int y, string text, int size, string font, color clr, bool bold)
+{
+   ObjectDelete(0, name);
+   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x); ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_TEXT, text); ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetString(0, name, OBJPROP_FONT, bold ? font + " Bold" : font);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr); ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+}
+
+void UpdateLabel(string name, string text, color clr = 0)
+{
+   if(ObjectFind(0, name) < 0) return;
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   if(clr != 0) ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+}
+
+void DeletePanel()
+{
+   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i);
+      if(StringFind(name, g_panelPrefix) == 0) ObjectDelete(0, name);
+   }
+}'''
+        }
+
+    def _get_news_module(self) -> Dict[str, str]:
+        return {
+            'vars': '''bool     g_newsActive = false;
+datetime g_nextNewsTime = 0;
+string   g_nextNewsName = "";
+datetime g_lastNewsCheck = 0;''',
+            'logic': '''void CheckNewsCalendar()
+{
+   datetime now = TimeCurrent();
+   if(now - g_lastNewsCheck < 60) return;
+   g_lastNewsCheck = now;
+   g_newsActive = false; g_nextNewsTime = 0; g_nextNewsName = "";
+   datetime from = now - InpNewsAfter * 60;
+   datetime to = now + (InpNewsBefore + 60) * 60;
+   MqlCalendarValue values[];
+   int count = CalendarValueHistory(values, from, to);
+   if(count <= 0) return;
+   for(int i = 0; i < count; i++) {
+      MqlCalendarEvent event;
+      if(!CalendarEventById(values[i].event_id, event) || event.importance != CALENDAR_IMPORTANCE_HIGH) continue;
+      MqlCalendarCountry country;
+      if(!CalendarCountryById(event.country_id, country) || StringFind(Symbol(), country.currency) < 0) continue;
+      datetime eventTime = values[i].time;
+      if(now >= eventTime - InpNewsBefore * 60 && now <= eventTime + InpNewsAfter * 60) {
+         g_newsActive = true; g_nextNewsTime = eventTime; g_nextNewsName = event.name; return;
+      }
+   }
+}'''
+        }
+
+    def _get_global_limits_module(self) -> Dict[str, str]:
+        return {
+            'vars': '',
+            'logic': '''void CheckGlobalLimits()
+{
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double floatingPL = equity - balance;
+   if(InpGlobalSL > 0 && floatingPL <= -InpGlobalSL) { Print("GLOBAL SL HIT"); CloseAllPositions(); return; }
+   if(InpGlobalTP > 0 && floatingPL >= InpGlobalTP) { Print("GLOBAL TP HIT"); CloseAllPositions(); return; }
+   if(InpMaxDD > 0) {
+      if(equity > g_peakBalance) g_peakBalance = equity;
+      double dd = (g_peakBalance - equity) / g_peakBalance * 100.0;
+      if(dd >= InpMaxDD) { Print("MAX DD HIT"); CloseAllPositions(); }
+   }
+}
+
+void CloseAllPositions()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionGetSymbol(i) == Symbol() && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+         g_trade.PositionClose(PositionGetInteger(POSITION_TICKET));
+   }
+}'''
+        }
     
-    def _generate_signal_logic(self, strategy_type: str, version: str) -> str:
+    def _generate_signal_logic(self, strategy_type: str, version: str) -> Any:
         """Gera lógica de sinais baseada no tipo e versão."""
         if version == 'mql4':
             if strategy_type == 'trend':
@@ -533,37 +765,47 @@ void ModifyPosition(double newSL)
    return 0;'''
         
         else: # MQL5 logic using Handles and CopyBuffer
+            res = {
+                'global_vars': '',
+                'init_logic': '',
+                'deinit_logic': '',
+                'logic': ''
+            }
+            
             if strategy_type == 'trend':
-                return '''   static int hFast = INVALID_HANDLE;
-   static int hSlow = INVALID_HANDLE;
-   if(hFast == INVALID_HANDLE) hFast = iMA(_Symbol, _Period, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE);
-   if(hSlow == INVALID_HANDLE) hSlow = iMA(_Symbol, _Period, InpSlowEMA, 0, MODE_EMA, PRICE_CLOSE);
+                res['global_vars'] = 'int g_hFastMA = INVALID_HANDLE;\nint g_hSlowMA = INVALID_HANDLE;'
+                res['init_logic'] = '   g_hFastMA = iMA(_Symbol, _Period, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE);\n   g_hSlowMA = iMA(_Symbol, _Period, InpSlowEMA, 0, MODE_EMA, PRICE_CLOSE);\n   if(g_hFastMA == INVALID_HANDLE || g_hSlowMA == INVALID_HANDLE) return INIT_FAILED;'
+                res['deinit_logic'] = '   IndicatorRelease(g_hFastMA);\n   IndicatorRelease(g_hSlowMA);'
+                res['logic'] = '''   double f[2], s[2];
+   ArraySetAsSeries(f, true);
+   ArraySetAsSeries(s, true);
    
-   double f[2], s[2];
-   if(CopyBuffer(hFast, 0, 0, 2, f) < 2 || CopyBuffer(hSlow, 0, 0, 2, s) < 2) return 0;
+   if(CopyBuffer(g_hFastMA, 0, 0, 2, f) < 2 || CopyBuffer(g_hSlowMA, 0, 0, 2, s) < 2) return 0;
    
-   // In MQL5 CopyBuffer: [0] is oldest (previous), [1] is newest (current)
-   if(f[1] > s[1] && f[0] <= s[0]) return 1;
-   if(f[1] < s[1] && f[0] >= s[0]) return -1;
+   // With ArraySetAsSeries: [0] = current, [1] = previous
+   if(f[0] > s[0] && f[1] <= s[1]) return 1;
+   if(f[0] < s[0] && f[1] >= s[1]) return -1;
    return 0;'''
             
             elif strategy_type == 'reversal':
-                return '''   static int hRsi = INVALID_HANDLE;
-   if(hRsi == INVALID_HANDLE) hRsi = iRSI(_Symbol, _Period, InpRsiPeriod, PRICE_CLOSE);
+                res['global_vars'] = 'int g_hRsi = INVALID_HANDLE;'
+                res['init_logic'] = '   g_hRsi = iRSI(_Symbol, _Period, InpRsiPeriod, PRICE_CLOSE);\n   if(g_hRsi == INVALID_HANDLE) return INIT_FAILED;'
+                res['deinit_logic'] = '   IndicatorRelease(g_hRsi);'
+                res['logic'] = '''   double r[2];
+   ArraySetAsSeries(r, true);
    
-   double r[1];
-   if(CopyBuffer(hRsi, 0, 0, 1, r) < 1) return 0;
+   if(CopyBuffer(g_hRsi, 0, 0, 2, r) < 2) return 0;
    
-   if(r[0] < InpOversold) return 1;
-   if(r[0] > InpOverbought) return -1;
+   if(r[0] < InpOversold && r[1] >= InpOversold) return 1;
+   if(r[0] > InpOverbought && r[1] <= InpOverbought) return -1;
    return 0;'''
             
             elif strategy_type == 'mean_reversion':
-                return '''   static int hBands = INVALID_HANDLE;
-   if(hBands == INVALID_HANDLE) hBands = iBands(_Symbol, _Period, Inpperiod, 0, Inpstd, PRICE_CLOSE);
-   
-   double upper[1], lower[1], close[1];
-   if(CopyBuffer(hBands, 1, 0, 1, upper) < 1 || CopyBuffer(hBands, 2, 0, 1, lower) < 1) return 0;
+                res['global_vars'] = 'int g_hBands = INVALID_HANDLE;'
+                res['init_logic'] = '   g_hBands = iBands(_Symbol, _Period, Inpperiod, 0, Inpstd, PRICE_CLOSE);\n   if(g_hBands == INVALID_HANDLE) return INIT_FAILED;'
+                res['deinit_logic'] = '   IndicatorRelease(g_hBands);'
+                res['logic'] = '''   double upper[1], lower[1], close[1];
+   if(CopyBuffer(g_hBands, 1, 0, 1, upper) < 1 || CopyBuffer(g_hBands, 2, 0, 1, lower) < 1) return 0;
    CopyClose(_Symbol, _Period, 0, 1, close);
    
    if(close[0] < lower[0]) return 1;
@@ -571,7 +813,7 @@ void ModifyPosition(double newSL)
    return 0;'''
             
             elif strategy_type in ['donchian', 'breakout']:
-                return '''   double high[1], low[1], close[1];
+                res['logic'] = '''   double high[1], low[1], close[1];
    int highest_idx = iHighest(_Symbol, _Period, MODE_HIGH, InpDonchianPeriod, 1);
    int lowest_idx = iLowest(_Symbol, _Period, MODE_LOW, InpDonchianPeriod, 1);
    
@@ -584,32 +826,28 @@ void ModifyPosition(double newSL)
    return 0;'''
 
             elif strategy_type == 'scalping':
-                return '''   static int hFast = INVALID_HANDLE;
-   static int hSlow = INVALID_HANDLE;
-   static int hRsi = INVALID_HANDLE;
-   if(hFast == INVALID_HANDLE) hFast = iMA(_Symbol, _Period, 5, 0, MODE_EMA, PRICE_CLOSE);
-   if(hSlow == INVALID_HANDLE) hSlow = iMA(_Symbol, _Period, 13, 0, MODE_EMA, PRICE_CLOSE);
-   if(hRsi == INVALID_HANDLE) hRsi = iRSI(_Symbol, _Period, 7, PRICE_CLOSE);
-   
-   double f[1], s[1], r[1];
-   if(CopyBuffer(hFast, 0, 0, 1, f) < 1 || CopyBuffer(hSlow, 0, 0, 1, s) < 1 || CopyBuffer(hRsi, 0, 0, 1, r) < 1) return 0;
+                res['global_vars'] = 'int g_hFast = INVALID_HANDLE;\nint g_hSlow = INVALID_HANDLE;\nint g_hRsi = INVALID_HANDLE;'
+                res['init_logic'] = '   g_hFast = iMA(_Symbol, _Period, 5, 0, MODE_EMA, PRICE_CLOSE);\n   g_hSlow = iMA(_Symbol, _Period, 13, 0, MODE_EMA, PRICE_CLOSE);\n   g_hRsi = iRSI(_Symbol, _Period, 7, PRICE_CLOSE);\n   if(g_hFast == INVALID_HANDLE || g_hSlow == INVALID_HANDLE || g_hRsi == INVALID_HANDLE) return INIT_FAILED;'
+                res['deinit_logic'] = '   IndicatorRelease(g_hFast);\n   IndicatorRelease(g_hSlow);\n   IndicatorRelease(g_hRsi);'
+                res['logic'] = '''   double f[1], s[1], r[1];
+   if(CopyBuffer(g_hFast, 0, 0, 1, f) < 1 || CopyBuffer(g_hSlow, 0, 0, 1, s) < 1 || CopyBuffer(g_hRsi, 0, 0, 1, r) < 1) return 0;
    
    if(f[0] > s[0] && r[0] < 70) return 1;
    if(f[0] < s[0] && r[0] > 30) return -1;
    return 0;'''
 
             else:
-                return '''   static int hFast = INVALID_HANDLE;
-   static int hSlow = INVALID_HANDLE;
-   if(hFast == INVALID_HANDLE) hFast = iMA(_Symbol, _Period, 9, 0, MODE_EMA, PRICE_CLOSE);
-   if(hSlow == INVALID_HANDLE) hSlow = iMA(_Symbol, _Period, 21, 0, MODE_EMA, PRICE_CLOSE);
-   
-   double f[1], s[1];
-   if(CopyBuffer(hFast, 0, 0, 1, f) < 1 || CopyBuffer(hSlow, 0, 0, 1, s) < 1) return 0;
+                res['global_vars'] = 'int g_hFastMA = INVALID_HANDLE;\nint g_hSlowMA = INVALID_HANDLE;'
+                res['init_logic'] = '   g_hFastMA = iMA(_Symbol, _Period, 9, 0, MODE_EMA, PRICE_CLOSE);\n   g_hSlowMA = iMA(_Symbol, _Period, 21, 0, MODE_EMA, PRICE_CLOSE);\n   if(g_hFastMA == INVALID_HANDLE || g_hSlowMA == INVALID_HANDLE) return INIT_FAILED;'
+                res['deinit_logic'] = '   IndicatorRelease(g_hFastMA);\n   IndicatorRelease(g_hSlowMA);'
+                res['logic'] = '''   double f[1], s[1];
+   if(CopyBuffer(g_hFastMA, 0, 0, 1, f) < 1 || CopyBuffer(g_hSlowMA, 0, 0, 1, s) < 1) return 0;
    
    if(f[0] > s[0]) return 1;
    if(f[0] < s[0]) return -1;
    return 0;'''
+            
+            return res
     
     def generate_json(self, strategy: Dict) -> str:
         """Gera configuração JSON."""
