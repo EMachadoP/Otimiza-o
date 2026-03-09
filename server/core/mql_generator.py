@@ -14,10 +14,15 @@ logger = logging.getLogger(__name__)
 class MQLGenerator:
     """Gera código MQL4/5 a partir de estratégias."""
     
+    # ── TEMPLATES ──────────────────────────────────────────────────
+    # NOTE: Use single braces { } for MQL code blocks.
+    # Placeholders use <<name>> syntax to avoid conflicts with MQL braces.
+    # This eliminates the previous bug where {{ was never converted to {.
+    
     MQL4_TEMPLATE = '''//+------------------------------------------------------------------+
-//|                                       {name}.mq4
+//|                                       <<name>>.mq4
 //|                        TradeStrategist Auto-Generated EA
-//|                        Generated: {timestamp}
+//|                        Generated: <<timestamp>>
 //+------------------------------------------------------------------+
 #property copyright "TradeStrategist"
 #property link      "https://tradestrategist.com"
@@ -25,7 +30,7 @@ class MQLGenerator:
 #property strict
 
 //--- Input Parameters
-{inputs}
+<<inputs>>
 
 //--- Global Variables
 int g_ticket = -1;
@@ -35,26 +40,26 @@ datetime g_lastBarTime = 0;
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
-{{
-   Print("{name} EA initialized");
-   Print("Strategy Type: {type}");
-   Print("Indicators: {indicators}");
+{
+   Print("<<name>> EA initialized");
+   Print("Strategy Type: <<type>>");
+   Print("Indicators: <<indicators>>");
    return(INIT_SUCCEEDED);
-}}
+}
 
 //+------------------------------------------------------------------+
 //| Expert deinitialization function                                 |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
-{{
-   Print("{name} EA deinitialized. Reason: ", reason);
-}}
+{
+   Print("<<name>> EA deinitialized. Reason: ", reason);
+}
 
 //+------------------------------------------------------------------+
 //| Expert tick function                                             |
 //+------------------------------------------------------------------+
 void OnTick()
-{{
+{
    // Check for new bar
    datetime currentBarTime = iTime(Symbol(), PERIOD_CURRENT, 0);
    if(currentBarTime == g_lastBarTime) return;
@@ -65,117 +70,117 @@ void OnTick()
    
    // Check for open positions
    if(OrderSelect(g_ticket, SELECT_BY_TICKET) && OrderCloseTime() == 0)
-   {{
+   {
       ManageOpenPosition();
       return;
-   }}
+   }
    
    // Check entry conditions
    int signal = CheckEntrySignal();
    
    if(signal > 0) // Buy signal
-   {{
+   {
       OpenBuyOrder();
-   }}
+   }
    else if(signal < 0) // Sell signal
-   {{
+   {
       OpenSellOrder();
-   }}
-}}
+   }
+}
 
 //+------------------------------------------------------------------+
 //| Check entry signal                                               |
 //+------------------------------------------------------------------+
 int CheckEntrySignal()
-{{
-{signal_logic}
-}}
+{
+<<signal_logic>>
+}
 
 //+------------------------------------------------------------------+
 //| Open Buy Order                                                   |
 //+------------------------------------------------------------------+
 void OpenBuyOrder()
-{{
+{
    double price = Ask;
    double sl = price - InpStopLoss * Point;
    double tp = price + InpTakeProfit * Point;
    
-   g_ticket = OrderSend(Symbol(), OP_BUY, InpLotSize, price, 10, sl, tp, "{name}", InpMagicNumber, 0, clrGreen);
+   g_ticket = OrderSend(Symbol(), OP_BUY, InpLotSize, price, 10, sl, tp, "<<name>>", InpMagicNumber, 0, clrGreen);
    if(g_ticket < 0)
-   {{
+   {
       Print("OrderSend error: ", GetLastError());
-   }}
+   }
    else
-   {{
+   {
       Print("Buy order opened: ", g_ticket);
-   }}
-}}
+   }
+}
 
 //+------------------------------------------------------------------+
 //| Open Sell Order                                                  |
 //+------------------------------------------------------------------+
 void OpenSellOrder()
-{{
+{
    double price = Bid;
    double sl = price + InpStopLoss * Point;
    double tp = price - InpTakeProfit * Point;
    
-   g_ticket = OrderSend(Symbol(), OP_SELL, InpLotSize, price, 10, sl, tp, "{name}", InpMagicNumber, 0, clrRed);
+   g_ticket = OrderSend(Symbol(), OP_SELL, InpLotSize, price, 10, sl, tp, "<<name>>", InpMagicNumber, 0, clrRed);
    if(g_ticket < 0)
-   {{
+   {
       Print("OrderSend error: ", GetLastError());
-   }}
+   }
    else
-   {{
+   {
       Print("Sell order opened: ", g_ticket);
-   }}
-}}
+   }
+}
 
 //+------------------------------------------------------------------+
 //| Manage Open Position                                             |
 //+------------------------------------------------------------------+
 void ManageOpenPosition()
-{{
+{
    if(!InpUseTrailingStop) return;
    
    if(OrderSelect(g_ticket, SELECT_BY_TICKET))
-   {{
+   {
       double openPrice = OrderOpenPrice();
       double currentSL = OrderStopLoss();
       double newSL = 0;
       
       if(OrderType() == OP_BUY)
-      {{
+      {
          newSL = Bid - InpTrailingStop * Point;
          if(newSL > currentSL)
-         {{
+         {
             OrderModify(g_ticket, openPrice, newSL, OrderTakeProfit(), 0, clrBlue);
-         }}
-      }}
+         }
+      }
       else if(OrderType() == OP_SELL)
-      {{
+      {
          newSL = Ask + InpTrailingStop * Point;
          if(newSL < currentSL || currentSL == 0)
-         {{
+         {
             OrderModify(g_ticket, openPrice, newSL, OrderTakeProfit(), 0, clrBlue);
-         }}
-      }}
-   }}
-}}
+         }
+      }
+   }
+}
 //+------------------------------------------------------------------+
 '''
     
     MQL5_TEMPLATE = '''//+------------------------------------------------------------------+
-//|                                       {name}.mq5
+//|                                       <<name>>.mq5
 //|                        TradeStrategist Auto-Generated EA
-//|                        Generated: {timestamp}
+//|                        Generated: <<timestamp>>
 //+------------------------------------------------------------------+
 #property copyright "TradeStrategist"
 #property link      "https://tradestrategist.com"
 #property version   "1.00"
 
 //--- Input Parameters
-{inputs}
+<<inputs>>
 
 //--- Global Variables
 ulong g_ticket = INVALID_TICKET;
@@ -185,26 +190,26 @@ datetime g_lastBarTime = 0;
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
-{{
-   Print("{name} EA initialized");
-   Print("Strategy Type: {type}");
-   Print("Indicators: {indicators}");
+{
+   Print("<<name>> EA initialized");
+   Print("Strategy Type: <<type>>");
+   Print("Indicators: <<indicators>>");
    return(INIT_SUCCEEDED);
-}}
+}
 
 //+------------------------------------------------------------------+
 //| Expert deinitialization function                                 |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
-{{
-   Print("{name} EA deinitialized. Reason: ", reason);
-}}
+{
+   Print("<<name>> EA deinitialized. Reason: ", reason);
+}
 
 //+------------------------------------------------------------------+
 //| Expert tick function                                             |
 //+------------------------------------------------------------------+
 void OnTick()
-{{
+{
    // Check for new bar
    datetime currentBarTime = iTime(Symbol(), PERIOD_CURRENT, 0);
    if(currentBarTime == g_lastBarTime) return;
@@ -215,39 +220,39 @@ void OnTick()
    
    // Check for open positions
    if(PositionSelect(Symbol()))
-   {{
+   {
       ManageOpenPosition();
       return;
-   }}
+   }
    
    // Check entry conditions
    int signal = CheckEntrySignal();
    
    if(signal > 0) // Buy signal
-   {{
+   {
       OpenBuyOrder();
-   }}
+   }
    else if(signal < 0) // Sell signal
-   {{
+   {
       OpenSellOrder();
-   }}
-}}
+   }
+}
 
 //+------------------------------------------------------------------+
 //| Check entry signal                                               |
 //+------------------------------------------------------------------+
 int CheckEntrySignal()
-{{
-{signal_logic}
-}}
+{
+<<signal_logic>>
+}
 
 //+------------------------------------------------------------------+
 //| Open Buy Order                                                   |
 //+------------------------------------------------------------------+
 void OpenBuyOrder()
-{{
-   MqlTradeRequest request = {{}};
-   MqlTradeResult result = {{}};
+{
+   MqlTradeRequest request = {};
+   MqlTradeResult result = {};
    
    double price = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
    double sl = price - InpStopLoss * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
@@ -262,26 +267,26 @@ void OpenBuyOrder()
    request.tp = tp;
    request.deviation = 10;
    request.magic = InpMagicNumber;
-   request.comment = "{name}";
+   request.comment = "<<name>>";
    
    if(!OrderSend(request, result))
-   {{
+   {
       Print("OrderSend error: ", GetLastError());
-   }}
+   }
    else
-   {{
+   {
       g_ticket = result.order;
       Print("Buy order opened: ", result.order);
-   }}
-}}
+   }
+}
 
 //+------------------------------------------------------------------+
 //| Open Sell Order                                                  |
 //+------------------------------------------------------------------+
 void OpenSellOrder()
-{{
-   MqlTradeRequest request = {{}};
-   MqlTradeResult result = {{}};
+{
+   MqlTradeRequest request = {};
+   MqlTradeResult result = {};
    
    double price = SymbolInfoDouble(Symbol(), SYMBOL_BID);
    double sl = price + InpStopLoss * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
@@ -296,24 +301,24 @@ void OpenSellOrder()
    request.tp = tp;
    request.deviation = 10;
    request.magic = InpMagicNumber;
-   request.comment = "{name}";
+   request.comment = "<<name>>";
    
    if(!OrderSend(request, result))
-   {{
+   {
       Print("OrderSend error: ", GetLastError());
-   }}
+   }
    else
-   {{
+   {
       g_ticket = result.order;
       Print("Sell order opened: ", result.order);
-   }}
-}}
+   }
+}
 
 //+------------------------------------------------------------------+
 //| Manage Open Position                                             |
 //+------------------------------------------------------------------+
 void ManageOpenPosition()
-{{
+{
    if(!InpUseTrailingStop) return;
    
    double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -321,30 +326,30 @@ void ManageOpenPosition()
    double newSL = 0;
    
    if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
-   {{
+   {
       newSL = SymbolInfoDouble(Symbol(), SYMBOL_BID) - InpTrailingStop * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
       if(newSL > currentSL)
-      {{
+      {
          ModifyPosition(newSL);
-      }}
-   }}
+      }
+   }
    else
-   {{
+   {
       newSL = SymbolInfoDouble(Symbol(), SYMBOL_ASK) + InpTrailingStop * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
       if(newSL < currentSL || currentSL == 0)
-      {{
+      {
          ModifyPosition(newSL);
-      }}
-   }}
-}}
+      }
+   }
+}
 
 //+------------------------------------------------------------------+
 //| Modify Position                                                  |
 //+------------------------------------------------------------------+
 void ModifyPosition(double newSL)
-{{
-   MqlTradeRequest request = {{}};
-   MqlTradeResult result = {{}};
+{
+   MqlTradeRequest request = {};
+   MqlTradeResult result = {};
    
    request.action = TRADE_ACTION_SLTP;
    request.position = PositionGetInteger(POSITION_TICKET);
@@ -352,10 +357,10 @@ void ModifyPosition(double newSL)
    request.tp = PositionGetDouble(POSITION_TP);
    
    if(!OrderSend(request, result))
-   {{
+   {
       Print("OrderModify error: ", GetLastError());
-   }}
-}}
+   }
+}
 //+------------------------------------------------------------------+
 '''
     
@@ -376,6 +381,10 @@ void ModifyPosition(double newSL)
             
         # Gerar inputs com defaults explícitos
         parameters = strategy.get('parameters') or {}
+        
+        # FIX: Coerce parameter values to numeric types
+        # JSON payloads may send numbers as strings
+        parameters = self._coerce_params(parameters)
         
         strategy_type = str(strategy.get('type') or 'trend').lower()
         
@@ -398,17 +407,38 @@ void ModifyPosition(double newSL)
         
         name = str(strategy.get('name') or 'CustomStrategy').replace(' ', '_')
         timestamp = str(pd.Timestamp.now())
-        indicators_str = ', '.join(indicators)
+        indicators_str = ', '.join(str(i) for i in indicators)
         
-        # Manually replace to avoid KeyError from braces in signal_logic
-        output = template.replace('{name}', name)
-        output = output.replace('{timestamp}', timestamp)
-        output = output.replace('{type}', strategy_type)
-        output = output.replace('{indicators}', indicators_str)
-        output = output.replace('{inputs}', inputs_str)
-        output = output.replace('{signal_logic}', signal_logic)
+        # FIX: Use <<placeholder>> syntax to avoid conflicts with MQL braces
+        output = template.replace('<<name>>', name)
+        output = output.replace('<<timestamp>>', timestamp)
+        output = output.replace('<<type>>', strategy_type)
+        output = output.replace('<<indicators>>', indicators_str)
+        output = output.replace('<<inputs>>', inputs_str)
+        output = output.replace('<<signal_logic>>', signal_logic)
         
         return output
+    
+    @staticmethod
+    def _coerce_params(parameters: Dict) -> Dict:
+        """Coerce parameter values from strings to int/float when possible."""
+        coerced = {}
+        for key, value in parameters.items():
+            if isinstance(value, (int, float)):
+                coerced[key] = value
+            elif isinstance(value, str):
+                try:
+                    # Try int first, then float
+                    if '.' in value:
+                        coerced[key] = float(value)
+                    else:
+                        coerced[key] = int(value)
+                except (ValueError, TypeError):
+                    logger.warning(f"Cannot coerce parameter {key}={value!r} to numeric, skipping")
+                    coerced[key] = value
+            else:
+                coerced[key] = value
+        return coerced
     
     def _generate_inputs(self, parameters: Dict, version: str) -> str:
         """Gera seção de inputs MQL."""
@@ -437,6 +467,9 @@ void ModifyPosition(double newSL)
                 lines.append(f'input int      Inp{name} = {value};        // {name}')
             elif isinstance(value, float):
                 lines.append(f'input double   Inp{name} = {value};        // {name}')
+            else:
+                # Fallback: treat as string comment for unsupported types
+                logger.warning(f"Skipping non-numeric parameter: {name}={value!r}")
         
         return '\n'.join(lines)
     
