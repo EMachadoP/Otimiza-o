@@ -292,7 +292,8 @@ int CheckEntrySignal()
 //+------------------------------------------------------------------+
 void OpenOrder(ENUM_ORDER_TYPE type)
 {
-   double atr[1];
+   double atr[];
+   ArrayResize(atr, 1);
    ArraySetAsSeries(atr, true);
    if(CopyBuffer(g_hATR, 0, 0, 1, atr) < 1 || atr[0] <= 0) return;
 
@@ -325,7 +326,8 @@ void ManageOpenPosition()
 {
    if(!InpUseTrailingStop) return;
    
-   double atr[1];
+   double atr[];
+   ArrayResize(atr, 1);
    ArraySetAsSeries(atr, true);
    if(CopyBuffer(g_hATR, 0, 0, 1, atr) < 1 || atr[0] <= 0) return;
    double trailDist = atr[0] * InpTrailMultiplier;
@@ -776,7 +778,9 @@ void CloseAllPositions()
                 res['global_vars'] = 'int g_hFastMA = INVALID_HANDLE;\nint g_hSlowMA = INVALID_HANDLE;'
                 res['init_logic'] = '   g_hFastMA = iMA(_Symbol, _Period, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE);\n   g_hSlowMA = iMA(_Symbol, _Period, InpSlowEMA, 0, MODE_EMA, PRICE_CLOSE);\n   if(g_hFastMA == INVALID_HANDLE || g_hSlowMA == INVALID_HANDLE) return INIT_FAILED;'
                 res['deinit_logic'] = '   IndicatorRelease(g_hFastMA);\n   IndicatorRelease(g_hSlowMA);'
-                res['logic'] = '''   double f[2], s[2];
+                res['logic'] = '''   double f[], s[];
+   ArrayResize(f, 2);
+   ArrayResize(s, 2);
    ArraySetAsSeries(f, true);
    ArraySetAsSeries(s, true);
    
@@ -791,7 +795,8 @@ void CloseAllPositions()
                 res['global_vars'] = 'int g_hRsi = INVALID_HANDLE;'
                 res['init_logic'] = '   g_hRsi = iRSI(_Symbol, _Period, InpRsiPeriod, PRICE_CLOSE);\n   if(g_hRsi == INVALID_HANDLE) return INIT_FAILED;'
                 res['deinit_logic'] = '   IndicatorRelease(g_hRsi);'
-                res['logic'] = '''   double r[2];
+                res['logic'] = '''   double r[];
+   ArrayResize(r, 2);
    ArraySetAsSeries(r, true);
    
    if(CopyBuffer(g_hRsi, 0, 0, 2, r) < 2) return 0;
@@ -804,7 +809,10 @@ void CloseAllPositions()
                 res['global_vars'] = 'int g_hBands = INVALID_HANDLE;'
                 res['init_logic'] = '   g_hBands = iBands(_Symbol, _Period, Inpperiod, 0, Inpstd, PRICE_CLOSE);\n   if(g_hBands == INVALID_HANDLE) return INIT_FAILED;'
                 res['deinit_logic'] = '   IndicatorRelease(g_hBands);'
-                res['logic'] = '''   double upper[1], lower[1], close[1];
+                res['logic'] = '''   double upper[], lower[], close[];
+   ArrayResize(upper, 1);
+   ArrayResize(lower, 1);
+   ArrayResize(close, 1);
    if(CopyBuffer(g_hBands, 1, 0, 1, upper) < 1 || CopyBuffer(g_hBands, 2, 0, 1, lower) < 1) return 0;
    CopyClose(_Symbol, _Period, 0, 1, close);
    
@@ -813,7 +821,10 @@ void CloseAllPositions()
    return 0;'''
             
             elif strategy_type in ['donchian', 'breakout']:
-                res['logic'] = '''   double high[1], low[1], close[1];
+                res['logic'] = '''   double high[], low[], close[];
+   ArrayResize(high, 1);
+   ArrayResize(low, 1);
+   ArrayResize(close, 1);
    int highest_idx = iHighest(_Symbol, _Period, MODE_HIGH, InpDonchianPeriod, 1);
    int lowest_idx = iLowest(_Symbol, _Period, MODE_LOW, InpDonchianPeriod, 1);
    
@@ -829,7 +840,10 @@ void CloseAllPositions()
                 res['global_vars'] = 'int g_hFast = INVALID_HANDLE;\nint g_hSlow = INVALID_HANDLE;\nint g_hRsi = INVALID_HANDLE;'
                 res['init_logic'] = '   g_hFast = iMA(_Symbol, _Period, 5, 0, MODE_EMA, PRICE_CLOSE);\n   g_hSlow = iMA(_Symbol, _Period, 13, 0, MODE_EMA, PRICE_CLOSE);\n   g_hRsi = iRSI(_Symbol, _Period, 7, PRICE_CLOSE);\n   if(g_hFast == INVALID_HANDLE || g_hSlow == INVALID_HANDLE || g_hRsi == INVALID_HANDLE) return INIT_FAILED;'
                 res['deinit_logic'] = '   IndicatorRelease(g_hFast);\n   IndicatorRelease(g_hSlow);\n   IndicatorRelease(g_hRsi);'
-                res['logic'] = '''   double f[1], s[1], r[1];
+                res['logic'] = '''   double f[], s[], r[];
+   ArrayResize(f, 1);
+   ArrayResize(s, 1);
+   ArrayResize(r, 1);
    if(CopyBuffer(g_hFast, 0, 0, 1, f) < 1 || CopyBuffer(g_hSlow, 0, 0, 1, s) < 1 || CopyBuffer(g_hRsi, 0, 0, 1, r) < 1) return 0;
    
    if(f[0] > s[0] && r[0] < 70) return 1;
@@ -840,7 +854,9 @@ void CloseAllPositions()
                 res['global_vars'] = 'int g_hFastMA = INVALID_HANDLE;\nint g_hSlowMA = INVALID_HANDLE;'
                 res['init_logic'] = '   g_hFastMA = iMA(_Symbol, _Period, 9, 0, MODE_EMA, PRICE_CLOSE);\n   g_hSlowMA = iMA(_Symbol, _Period, 21, 0, MODE_EMA, PRICE_CLOSE);\n   if(g_hFastMA == INVALID_HANDLE || g_hSlowMA == INVALID_HANDLE) return INIT_FAILED;'
                 res['deinit_logic'] = '   IndicatorRelease(g_hFastMA);\n   IndicatorRelease(g_hSlowMA);'
-                res['logic'] = '''   double f[1], s[1];
+                res['logic'] = '''   double f[], s[];
+   ArrayResize(f, 1);
+   ArrayResize(s, 1);
    if(CopyBuffer(g_hFastMA, 0, 0, 1, f) < 1 || CopyBuffer(g_hSlowMA, 0, 0, 1, s) < 1) return 0;
    
    if(f[0] > s[0]) return 1;

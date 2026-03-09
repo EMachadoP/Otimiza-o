@@ -70,6 +70,20 @@ export function EAExporter({ strategy, open, onOpenChange }: EAExporterProps) {
   const jsonConfig = exportData?.json || '';
   const yamlConfig = exportData?.yaml || '';
 
+  const generateSetFile = () => {
+    if (!strategy) return '';
+    let content = '';
+    Object.entries(strategy.parameters).forEach(([key, value]) => {
+      let mql_name = key;
+      if (!key.toLowerCase().startsWith('inp')) {
+        mql_name = 'Inp' + key.charAt(0).toUpperCase() + key.slice(1);
+      }
+      content += `${mql_name}=${value}\n`;
+    });
+    return content;
+  };
+  const setFileContent = generateSetFile();
+
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
     setCopied(true);
@@ -105,10 +119,14 @@ export function EAExporter({ strategy, open, onOpenChange }: EAExporterProps) {
           </div>
         ) : (
           <Tabs defaultValue="mql" className="w-full">
-            <TabsList className="grid w-full grid-cols-3 bg-slate-800">
+            <TabsList className="grid w-full grid-cols-4 bg-slate-800">
               <TabsTrigger value="mql" className="data-[state=active]:bg-slate-700">
                 <FileCode className="h-4 w-4 mr-2" />
                 MQL4/5
+              </TabsTrigger>
+              <TabsTrigger value="set" className="data-[state=active]:bg-slate-700">
+                <Settings className="h-4 w-4 mr-2" />
+                MT5 SET
               </TabsTrigger>
               <TabsTrigger value="json" className="data-[state=active]:bg-slate-700">
                 <Settings className="h-4 w-4 mr-2" />
@@ -170,6 +188,43 @@ export function EAExporter({ strategy, open, onOpenChange }: EAExporterProps) {
                     {mqlCode || "// Selecione uma versão para visualizar o código"}
                   </pre>
                 )}
+              </div>
+            </TabsContent>
+
+            {/* SET File Tab */}
+            <TabsContent value="set" className="space-y-4">
+              <div className="flex justify-between items-center mt-4 pt-2">
+                <p className="text-[11px] text-emerald-400 font-medium bg-emerald-500/10 p-2 rounded border border-emerald-500/20 max-w-[65%]">
+                  Dica: Para EA's importados, baixe este arquivo .set e carregue-o na janela de Parâmetros do seu EA no MetaTrader 5. Não misture o código!
+                </p>
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCopy(setFileContent)}
+                    className="border-slate-600"
+                    disabled={!setFileContent}
+                  >
+                    {copied ? <Check className="h-4 w-4 mr-2" /> : <Copy className="h-4 w-4 mr-2" />}
+                    Copiar
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleDownload(setFileContent, `${strategy.name.replace(/\s+/g, '_')}.set`)}
+                    className="border-slate-600"
+                    disabled={!setFileContent}
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Download
+                  </Button>
+                </div>
+              </div>
+
+              <div className="bg-slate-950 rounded-lg p-4 overflow-x-auto max-h-96 overflow-y-auto border border-slate-800">
+                <pre className="text-xs font-mono text-slate-300 whitespace-pre">
+                  {setFileContent}
+                </pre>
               </div>
             </TabsContent>
 
