@@ -5,15 +5,26 @@ from typing import Dict
 import uvicorn
 import sys
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from itertools import product
+import logging
+from dataclasses import dataclass, asdict
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.mt5_bridge import mt5_bridge
-from core.ml_models import ml_models
-from core.backtest_engine import backtest_engine
-from core.optimizer import ParameterOptimizer
+logger = logging.getLogger(__name__)
 
-parameter_optimizer = ParameterOptimizer(backtest_engine)
+from core.backtest_engine import backtest_engine
+# Ensure optimizer is available
+from core.optimizer import ParameterOptimizer
+optimizer = ParameterOptimizer(backtest_engine)
+from core.feature_engineer import feature_engineer
+from core.mql_parser import mql_parser
+from core.mql_generator import mql_generator
+from core.ml_models import ml_models
+from core.mt5_bridge import mt5_bridge
+
+parameter_optimizer = optimizer # Consolidate
 
 
 @asynccontextmanager
@@ -74,7 +85,7 @@ async def get_symbols():
 
 @app.get("/api/ohlcv")
 async def get_ohlcv(symbol: str, timeframe: str, count: int = 500):
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=count)
     if df is None or df.empty:
         return [] # Return empty list instead of 500 to keep frontend alive
     data = df.copy()
@@ -84,7 +95,7 @@ async def get_ohlcv(symbol: str, timeframe: str, count: int = 500):
 
 @app.get("/api/analysis")
 async def get_analysis(symbol: str, timeframe: str):
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, 200)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=200)
     if df is None or df.empty:
         return {
             "regime": {"type": "undefined", "confidence": 0, "indicators": {}}, 
@@ -103,10 +114,10 @@ async def get_analysis(symbol: str, timeframe: str):
 @app.get("/api/strategies")
 async def get_strategies(symbol: str, timeframe: str):
     """Discover and rank strategies using real MT5 data."""
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, 1000)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=1000)
     if df is None or df.empty:
         return []
-    strategies = backtest_engine.discover_strategies(df)
+    strategies = backtest_engine.discover_strategies(df, symbol_name=symbol)
     return strategies
 
 
@@ -121,13 +132,13 @@ async def run_validation(payload: Dict):
     strategy_type = payload.get("type", "trend")
     params = payload.get("parameters", {})
 
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, 2000)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=2000)
     if df is None:
         raise HTTPException(status_code=500, detail="Failed to fetch data")
 
-    wfa = backtest_engine.run_wfa(df, strategy_type, params)
-    cpcv = backtest_engine.run_cpcv(df, strategy_type, params)
-    mc = backtest_engine.run_monte_carlo(df, strategy_type, params, n_simulations=5000)
+    wfa = backtest_engine.run_wfa(df, strategy_type, params, symbol_name=symbol)
+    cpcv = backtest_engine.run_cpcv(df, strategy_type, params, symbol_name=symbol)
+    mc = backtest_engine.run_monte_carlo(df, strategy_type, params, symbol_name=symbol, n_simulations=5000)
 
     # PBO approximation from CPCV sharpe variance
     pbo = min(float(cpcv['sharpeStd'] / (abs(cpcv['avgSharpe']) + 1e-10) * 100), 100)
@@ -154,7 +165,7 @@ async def run_backtest(payload: Dict):
     df = mt5_bridge.get_ohlcv(symbol, timeframe, 1000)
     if df is None or df.empty:
         return {"equity": [], "metrics": {}, "trades": []}
-    return backtest_engine.run_backtest(df, strategy_type, params)
+    return backtest_engine.run_backtest(df, strategy_type, params, symbol_name=symbol)
 
 
 # ──────────────────────────────────────────
@@ -163,7 +174,7 @@ async def run_backtest(payload: Dict):
 @app.get("/api/heatmap")
 async def get_heatmap(symbol: str, timeframe: str):
     """Compute win rate heatmap by hour/day from real MT5 data."""
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, 2000)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=2000)
     if df is None or df.empty:
         return [[0]*24 for _ in range(5)] # 5 days x 24 hours
     return backtest_engine.compute_heatmap(df)
@@ -174,40 +185,148 @@ async def get_heatmap(symbol: str, timeframe: str):
 # ──────────────────────────────────────────
 @app.get("/api/ml-insights")
 async def get_ml_insights(symbol: str, timeframe: str):
-    """Compute ML feature importance and success probability from real data."""
+    """Compute ML feature importance using 130+ technical indicators."""
     df = mt5_bridge.get_ohlcv(symbol, timeframe, 500)
     if df is None or df.empty:
-        return {
-            "features": [],
-            "successProbability": 0,
-            "explanation": "Dados insuficientes no MT5 para este símbolo/timeframe."
-        }
-    return backtest_engine.compute_feature_importance(df)
+        return {"features": [], "successProbability": 0, "explanation": "Dados insuficientes."}
+    
+    # 1. Compute all features
+    df_feat = feature_engineer.compute_all_features(df)
+    
+    # 2. Detect regime and select features
+    df_regime = feature_engineer.detect_regime_hmm(df_feat)
+    top_features = feature_engineer.select_features(df_regime, n_features=10)
+    
+    # 3. Format response - ENSURE future_return exists
+    if 'future_return' not in df_regime.columns:
+        df_regime['future_return'] = df_regime['close'].pct_change().shift(-1)
+        
+    valid_top_features = [f for f in top_features if f in df_regime.columns]
+    if not valid_top_features:
+        return {"features": [], "successProbability": 50, "explanation": "Não foi possível extrair features relevantes."}
+        
+    corrs = df_regime[valid_top_features + ['future_return']].corr()['future_return'].abs().drop('future_return', errors='ignore')
+    total_corr = corrs.sum()
+    
+    features_list = []
+    for feat in valid_top_features:
+        features_list.append({
+            "feature": feat.upper().replace('_', ' '),
+            "importance": round(float(corrs[feat] / (total_corr + 1e-10) * 100), 1),
+            "description": f"Indicador técnico avançado: {feat}"
+        })
+    
+    # Sort by importance
+    features_list.sort(key=lambda x: x['importance'], reverse=True)
+    
+    # Probability based on recent return consistency
+    recent_rets = df_regime['future_return'].tail(20).dropna()
+    prob = round(float((recent_rets > 0).mean() * 100), 1) if not recent_rets.empty else 50
+    
+    regime_type = "alta" if df_regime['return_1d'].tail(5).mean() > 0 else "baixa"
+    explanation = (
+        f"Análise de 130+ indicadores concluída. O mercado apresenta viés de {regime_type}. "
+        f"As features mais preditivas no momento são {', '.join(valid_top_features[:2])}."
+    )
+    
+    return {
+        "features": features_list,
+        "successProbability": min(max(prob, 30), 95),
+        "explanation": explanation
+    }
 
 
 # ──────────────────────────────────────────
 # NEW: Real Parameter Optimization
 # ──────────────────────────────────────────
 @app.post("/api/optimize")
-async def run_optimization(payload: Dict):
-    """Run grid-search parameter optimization with real WFA validation."""
+async def optimize(payload: Dict):
+    """Run strategy optimization with high performance funnel."""
     symbol = payload.get("symbol", "EURUSD")
     timeframe = payload.get("timeframe", "H1")
     strategy_type = payload.get("type", "trend")
     param_ranges = payload.get("paramRanges", {})
     criteria = payload.get("criteria", "sharpe")
+    
+    logger.info(f"Otimizador: Recebida requisição para {strategy_type} em {symbol}")
+    
+    # 1. Get Data
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=1000)
+    if df.empty:
+        raise HTTPException(status_code=400, detail="Sem dados disponíveis no MT5")
+        
+    # 2. Add Basic Features
+    df = feature_engineer.compute_all_features(df, blocks=['trend', 'momentum', 'volatility'])
+    
+    # 3. Run Optimization Funnel
+    try:
+        results = optimizer.optimize(
+            df=df,
+            strategy_type=strategy_type,
+            param_ranges=param_ranges,
+            criteria=criteria,
+            symbol_name=symbol
+        )
+        return results
+    except Exception as e:
+        logger.error(f"Erro na otimização: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ──────────────────────────────────────────
+@app.post("/api/convert-mql")
+async def convert_mql(payload: Dict):
+    """Convert MQL4/5 code into a Python strategy."""
+    mql_code = payload.get("code", "")
+    if not mql_code:
+        raise HTTPException(status_code=400, detail="MQL code is required")
+        
+    try:
+        parsed = mql_parser.parse(mql_code)
+        python_code = mql_parser.convert_to_python(mql_code)
+        
+        has_logic = bool(parsed.get("signals_logic", "").strip())
+        errors = parsed.get("errors", [])
+        
+        status = "success"
+        if errors or not has_logic:
+            status = "partial"
+            
+        return {
+            "strategy": parsed,
+            "pythonCode": python_code,
+            "status": status,
+            "errors": errors + ([] if has_logic else ["Não foi possível extrair a lógica de sinais."])
+        }
+    except Exception as e:
+        logger.error(f"Error converting MQL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    if not param_ranges:
-        raise HTTPException(status_code=400, detail="paramRanges is required")
 
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, 2000)
-    if df is None or df.empty:
-        raise HTTPException(status_code=500, detail="Failed to fetch data from MT5")
-
-    result = parameter_optimizer.optimize_strategy(
-        df, strategy_type, param_ranges, criteria
-    )
-    return result
+@app.post("/api/export-ea")
+async def export_ea(payload: Dict):
+    """Export a strategy to MQL4, MQL5, JSON or YAML."""
+    strategy = payload.get("strategy")
+    if not strategy:
+        logger.error("Export EA failed: No strategy in payload")
+        raise HTTPException(status_code=400, detail="Strategy data is required")
+    
+    try:
+        logger.info(f"Generating export files for strategy: {strategy.get('name', 'Unknown')}")
+        mql4 = mql_generator.generate_mql4(strategy)
+        mql5 = mql_generator.generate_mql5(strategy)
+        json_config = mql_generator.generate_json(strategy)
+        yaml_config = mql_generator.generate_yaml(strategy)
+        
+        logger.info("Export files generated successfully")
+        return {
+            "mql4": mql4,
+            "mql5": mql5,
+            "json": json_config,
+            "yaml": yaml_config,
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error exporting EA: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

@@ -7,16 +7,17 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { 
-  Upload, 
-  FileCode, 
-  Settings, 
-  Play, 
-  Check, 
-  AlertCircle, 
+import {
+  Upload,
+  FileCode,
+  Settings,
+  Play,
+  Check,
+  AlertCircle,
   Code,
   Trash2,
-  Edit
+  Edit,
+  RefreshCw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Strategy } from '@/types/trading';
@@ -40,73 +41,7 @@ interface EAImporterProps {
   onImport: (strategy: Strategy) => void;
 }
 
-// Parser básico para extrair inputs de código MQL
-function parseMQLCode(code: string): ParsedEA | null {
-  try {
-    // Detectar tipo (EA ou Indicador)
-    const isIndicator = code.includes('int OnCalculate') || code.includes('#property indicator');
-    const type = isIndicator ? 'indicator' : 'ea';
-    
-    // Extrair nome
-    const nameMatch = code.match(/#property\s+name\s+"([^"]+)"/i) || 
-                      code.match(/class\s+(\w+)|input\s+group\s+"([^"]+)"/i);
-    const name = nameMatch ? (nameMatch[1] || nameMatch[2] || 'Custom Strategy') : 'Custom Strategy';
-    
-    // Extrair inputs
-    const inputRegex = /input\s+(\w+)\s+(\w+)\s*=\s*([^;]+);(?:\s*\/\/\s*(.+))?/gi;
-    const inputs: Array<{name: string; type: string; defaultValue: string; description: string}> = [];
-    let match;
-    
-    while ((match = inputRegex.exec(code)) !== null) {
-      inputs.push({
-        type: match[1],
-        name: match[2],
-        defaultValue: match[3].trim(),
-        description: match[4] || match[2]
-      });
-    }
-    
-    // Extrair indicadores usados
-    const indicators: string[] = [];
-    const indicatorPatterns = [
-      { name: 'iMA', label: 'Moving Average' },
-      { name: 'iRSI', label: 'RSI' },
-      { name: 'iMACD', label: 'MACD' },
-      { name: 'iATR', label: 'ATR' },
-      { name: 'iBands', label: 'Bollinger Bands' },
-      { name: 'iStochastic', label: 'Stochastic' },
-      { name: 'iCCI', label: 'CCI' },
-      { name: 'iADX', label: 'ADX' },
-      { name: 'iOBV', label: 'OBV' },
-      { name: 'iMFI', label: 'MFI' },
-      { name: 'iSAR', label: 'Parabolic SAR' },
-      { name: 'iIchimoku', label: 'Ichimoku' },
-      { name: 'iFractals', label: 'Fractals' },
-      { name: 'iAlligator', label: 'Alligator' },
-      { name: 'iEnvelopes', label: 'Envelopes' },
-      { name: 'iMomentum', label: 'Momentum' },
-      { name: 'iWPR', label: 'Williams %R' },
-      { name: 'iStdDev', label: 'Standard Deviation' }
-    ];
-    
-    indicatorPatterns.forEach(ind => {
-      if (code.includes(ind.name)) {
-        indicators.push(ind.label);
-      }
-    });
-    
-    return {
-      name,
-      type,
-      inputs,
-      indicators: indicators.length > 0 ? indicators : ['Price Action'],
-      code
-    };
-  } catch (error) {
-    console.error('Erro ao parsear código MQL:', error);
-    return null;
-  }
-}
+// Parser moved to backend for higher fidelity
 
 // Templates de exemplo
 const exampleEA = `//+------------------------------------------------------------------+
@@ -211,27 +146,74 @@ int OnCalculate(const int rates_total,
 export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
   const [code, setCode] = useState('');
   const [parsedEA, setParsedEA] = useState<ParsedEA | null>(null);
+  const [pythonCode, setPythonCode] = useState<string | null>(null);
+  const [isParsing, setIsParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [editedParams, setEditedParams] = useState<Record<string, string>>({});
   const [strategyName, setStrategyName] = useState('');
   const [strategyType, setStrategyType] = useState<'trend' | 'reversal' | 'breakout' | 'scalping' | 'mean_reversion'>('trend');
 
-  const handleParse = () => {
+  const handleParse = async () => {
+    if (!code.trim()) return;
+
+    setIsParsing(true);
     setParseError(null);
-    const parsed = parseMQLCode(code);
-    
-    if (parsed) {
-      setParsedEA(parsed);
-      setStrategyName(parsed.name);
-      
-      // Inicializar parâmetros editáveis
-      const params: Record<string, string> = {};
-      parsed.inputs.forEach(input => {
-        params[input.name] = input.defaultValue;
+
+    try {
+      const response = await fetch('/api/convert-mql', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ code }),
       });
-      setEditedParams(params);
-    } else {
-      setParseError('Não foi possível parsear o código. Verifique se é um código MQL4/5 válido.');
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Falha ao processar código no servidor');
+      }
+
+      const data = await response.json();
+
+      if (data.status === 'success' || data.status === 'partial') {
+        if (data.status === 'partial' && data.errors?.length > 0) {
+          setParseError('Aviso: Conversão parcial. ' + data.errors.join(' | '));
+        }
+
+        const { strategy, pythonCode } = data;
+        // Mapear retorno do backend para o formato do frontend
+        const mappedInputs = Object.entries(strategy.inputs || {}).map(([name, info]: [string, any]) => ({
+          name,
+          type: info.type,
+          defaultValue: String(info.default),
+          description: info.description || name
+        }));
+
+        setParsedEA({
+          name: strategy.name,
+          type: 'ea',
+          inputs: mappedInputs,
+          indicators: strategy.indicators || [],
+          code: code
+        });
+
+        setPythonCode(pythonCode);
+        setStrategyName(strategy.name);
+        setStrategyType(strategy.type as any);
+
+        const params: Record<string, string> = {};
+        mappedInputs.forEach(input => {
+          params[input.name] = input.defaultValue;
+        });
+        setEditedParams(params);
+      } else {
+        setParseError('Erro na conversão: ' + (data.detail || 'Erro desconhecido'));
+      }
+    } catch (error: any) {
+      console.error('Erro ao parsear código MQL:', error);
+      setParseError(error.message || 'Erro de conexão ou processamento');
+    } finally {
+      setIsParsing(false);
     }
   };
 
@@ -253,6 +235,7 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
       type: strategyType,
       parameters: numericParams,
       indicators: parsedEA.indicators,
+      pythonCode: pythonCode || undefined,
       metrics: {
         wfe: 0,
         sharpeIS: 0,
@@ -273,7 +256,7 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
 
     onImport(newStrategy);
     onOpenChange(false);
-    
+
     // Reset
     setCode('');
     setParsedEA(null);
@@ -344,11 +327,20 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
                   </Button>
                   <Button
                     onClick={handleParse}
-                    disabled={!code.trim()}
+                    disabled={!code.trim() || isParsing}
                     className="bg-blue-600 hover:bg-blue-700"
                   >
-                    <Play className="h-4 w-4 mr-2" />
-                    Analisar Código
+                    {isParsing ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                        Convertendo para Python...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="h-4 w-4 mr-2" />
+                        Analisar & Converter
+                      </>
+                    )}
                   </Button>
                 </div>
               </>
@@ -360,8 +352,8 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <Badge className={cn(
-                          parsedEA.type === 'ea' 
-                            ? 'bg-blue-500/20 text-blue-400' 
+                          parsedEA.type === 'ea'
+                            ? 'bg-blue-500/20 text-blue-400'
                             : 'bg-purple-500/20 text-purple-400'
                         )}>
                           {parsedEA.type === 'ea' ? 'Expert Advisor' : 'Indicador'}
@@ -396,8 +388,8 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
                             size="sm"
                             onClick={() => setStrategyType(type)}
                             className={cn(
-                              strategyType === type 
-                                ? 'bg-blue-600' 
+                              strategyType === type
+                                ? 'bg-blue-600'
                                 : 'border-slate-600 text-slate-400'
                             )}
                           >
@@ -447,11 +439,26 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
                   </CardContent>
                 </Card>
 
-                {/* Preview do código */}
+                {/* Preview do código Python Gerado */}
+                {pythonCode && (
+                  <div className="space-y-2">
+                    <Label className="text-emerald-400 flex items-center gap-2">
+                      <Code className="h-4 w-4" />
+                      Código Python Gerado (TradeStrategist Engine):
+                    </Label>
+                    <div className="bg-slate-950 rounded-lg p-4 max-h-64 overflow-y-auto border border-emerald-500/30">
+                      <pre className="text-xs font-mono text-emerald-300">
+                        {pythonCode}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+
+                {/* Preview do código MQL Original */}
                 <div className="space-y-2">
-                  <Label className="text-slate-400">Preview do Código:</Label>
-                  <div className="bg-slate-950 rounded-lg p-4 max-h-48 overflow-y-auto">
-                    <pre className="text-xs font-mono text-slate-400">
+                  <Label className="text-slate-500">MQL Original:</Label>
+                  <div className="bg-slate-950/50 rounded-lg p-4 max-h-32 overflow-y-auto border border-slate-800">
+                    <pre className="text-xs font-mono text-slate-500">
                       {parsedEA.code.substring(0, 1000)}...
                     </pre>
                   </div>
@@ -481,7 +488,7 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
           <TabsContent value="examples" className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <Card className="bg-slate-800 border-slate-700 cursor-pointer hover:border-blue-500/50 transition-colors"
-                    onClick={() => loadExample('ea')}>
+                onClick={() => loadExample('ea')}>
                 <CardHeader>
                   <CardTitle className="text-lg flex items-center gap-2">
                     <FileCode className="h-5 w-5 text-blue-400" />
@@ -500,7 +507,7 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
               </Card>
 
               <Card className="bg-slate-800 border-slate-700 cursor-pointer hover:border-purple-500/50 transition-colors"
-                    onClick={() => loadExample('indicator')}>
+                onClick={() => loadExample('indicator')}>
                 <CardHeader>
                   <CardTitle className="text-lg flex items-center gap-2">
                     <Settings className="h-5 w-5 text-purple-400" />

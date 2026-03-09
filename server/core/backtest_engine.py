@@ -126,9 +126,11 @@ class BacktestEngine:
 
         return pd.Series(signals, index=df.index)
 
-    def _compute_metrics(self, equity_curve: pd.Series, signals: pd.Series, initial_balance: float = 10000) -> Dict:
+    def _compute_metrics(self, equity_curve: pd.Series, signals: pd.Series, initial_balance: float = 10000, fast: bool = False) -> Dict:
         """Compute real strategy metrics from equity curve."""
         returns = equity_curve.pct_change().dropna()
+        if returns.empty:
+            return {"sharpeIS": -1, "profitFactor": 0, "winRate": 0, "maxDrawdown": 100}
 
         total_return = (equity_curve.iloc[-1] / initial_balance) - 1
         drawdown = (equity_curve.cummax() - equity_curve) / equity_curve.cummax()
@@ -137,9 +139,19 @@ class BacktestEngine:
         # Sharpe (annualized)
         sharpe = float(returns.mean() / (returns.std() + 1e-10) * np.sqrt(252))
 
+        if fast:
+            return {
+                "sharpeIS": round(sharpe, 2),
+                "maxDrawdown": round(max_dd * 100, 2),
+                "totalReturn": round(total_return * 100, 1)
+            }
+
         # Sortino
         downside = returns[returns < 0]
-        sortino = float(returns.mean() / (downside.std() + 1e-10) * np.sqrt(252))
+        if len(downside) > 2:
+            sortino = float(returns.mean() / (downside.std() + 1e-10) * np.sqrt(252))
+        else:
+            sortino = 0.0
 
         # Profit Factor
         gains = returns[returns > 0].sum()
@@ -171,46 +183,32 @@ class BacktestEngine:
             "sortinoRatio": round(sortino, 2),
         }
 
-    def run_backtest(self, df: pd.DataFrame, strategy_type: str, params: Dict) -> Dict:
-        """Run a full vectorized backtest with validation."""
+    def run_backtest(self, df: pd.DataFrame, strategy_type: str, params: Dict, symbol_name: str = "EURUSD", fast: bool = False) -> Dict:
+        """Run a vectorized backtest. If fast=True, skip curve formatting and return minimal metrics."""
         try:
             signals = self._generate_signals(df, strategy_type, params)
             initial_balance = 10000
-            # Vectorized Returns calculation
             close = df['close']
             returns = close.pct_change()
             
-            # SL/TP Logic (Pips/Points)
-            # Assuming 1 pip = 0.0001 (or 0.01 for JPY/BTC) - simplified for now
-            # Better: use symbol digits from MT5 if available
             pip_size = 0.0001 if symbol_name and ("JPY" not in symbol_name and "BTC" not in symbol_name and "XAU" not in symbol_name) else 0.01
-            if "XAU" in symbol_name: pip_size = 0.1 # Gold
-            if "BTC" in symbol_name: pip_size = 1.0 # Crypto
+            if "XAU" in symbol_name: pip_size = 0.1 
+            if "BTC" in symbol_name: pip_size = 1.0 
             
             sl_pips = params.get('stopLoss', 0)
             tp_pips = params.get('takeProfit', 0)
             
             strategy_returns = signals.shift(1) * returns
             
-            # Simplified SL/TP hit detection using vectorized logic
-            # This is a bit complex in pure vectorization but we can approximate:
             if sl_pips > 0 or tp_pips > 0:
                 high = df['high']
                 low = df['low']
-                
-                # SL/TP prices for each potential trade entry
-                # (Only valid on bars where sign changes)
                 entry_prices = close.where(signals.diff().abs() > 0).ffill()
                 
                 if sl_pips > 0:
                     sl_dist = sl_pips * pip_size
-                    # Long SL hit: Low < Entry - Dist
-                    # Short SL hit: High > Entry + Dist
                     long_sl_hit = (signals.shift(1) == 1) & (low < (entry_prices - sl_dist))
                     short_sl_hit = (signals.shift(1) == -1) & (high > (entry_prices + sl_dist))
-                    
-                    # Cap returns at -SL dist %
-                    # (Approximate: assuming we hit SL at exactly the price)
                     sl_hit = long_sl_hit | short_sl_hit
                     strategy_returns[sl_hit] = - (sl_dist / entry_prices)
                 
@@ -218,17 +216,18 @@ class BacktestEngine:
                     tp_dist = tp_pips * pip_size
                     long_tp_hit = (signals.shift(1) == 1) & (high > (entry_prices + tp_dist))
                     short_tp_hit = (signals.shift(1) == -1) & (low < (entry_prices - tp_dist))
-                    
                     tp_hit = long_tp_hit | short_tp_hit
                     strategy_returns[tp_hit] = (tp_dist / entry_prices)
 
             equity_curve = (1 + strategy_returns).cumprod() * initial_balance
             equity_curve = equity_curve.ffill().fillna(initial_balance)
 
-            metrics = self._compute_metrics(equity_curve, signals, initial_balance)
-            drawdown = (equity_curve.cummax() - equity_curve) / equity_curve.cummax()
+            metrics = self._compute_metrics(equity_curve, signals, initial_balance, fast=fast)
+            
+            if fast:
+                return metrics
 
-            # Format equity curve for UI
+            drawdown = (equity_curve.cummax() - equity_curve) / equity_curve.cummax()
             formatted_curve = []
             step = max(1, len(equity_curve) // 100)
             for i in range(0, len(equity_curve), step):
@@ -251,7 +250,7 @@ class BacktestEngine:
     # ──────────────────────────────────────────
     # Walk-Forward Analysis (WFA)
     # ──────────────────────────────────────────
-    def run_wfa(self, df: pd.DataFrame, strategy_type: str, params: Dict, n_windows: int = 5) -> Dict:
+    def run_wfa(self, df: pd.DataFrame, strategy_type: str, params: Dict, symbol_name: str = "EURUSD", n_windows: int = 5) -> Dict:
         """Real Walk-Forward Analysis on historical data."""
         total = len(df)
         # Adaptive: reduce windows if data is short
@@ -321,7 +320,7 @@ class BacktestEngine:
     # ──────────────────────────────────────────
     # Combinatorial Purged Cross-Validation (CPCV)
     # ──────────────────────────────────────────
-    def run_cpcv(self, df: pd.DataFrame, strategy_type: str, params: Dict, n_folds: int = 6, embargo: int = 5) -> Dict:
+    def run_cpcv(self, df: pd.DataFrame, strategy_type: str, params: Dict, symbol_name: str = "EURUSD", n_folds: int = 6, embargo: int = 5) -> Dict:
         """Real CPCV on historical data."""
         total = len(df)
         fold_size = total // n_folds
@@ -369,7 +368,7 @@ class BacktestEngine:
     # ──────────────────────────────────────────
     # Monte Carlo Simulation
     # ──────────────────────────────────────────
-    def run_monte_carlo(self, df: pd.DataFrame, strategy_type: str, params: Dict, n_simulations: int = 10000) -> Dict:
+    def run_monte_carlo(self, df: pd.DataFrame, strategy_type: str, params: Dict, symbol_name: str = "EURUSD", n_simulations: int = 10000) -> Dict:
         """Real Monte Carlo simulation on strategy returns."""
         signals = self._generate_signals(df, strategy_type, params)
         returns = df['close'].pct_change() * signals.shift(1)
@@ -404,7 +403,7 @@ class BacktestEngine:
     # ──────────────────────────────────────────
     # Strategy Discovery
     # ──────────────────────────────────────────
-    def discover_strategies(self, df: pd.DataFrame) -> List[Dict]:
+    def discover_strategies(self, df: pd.DataFrame, symbol_name: str = "EURUSD") -> List[Dict]:
         """Run all built-in strategies on the data and rank them."""
         results = []
 
@@ -419,7 +418,7 @@ class BacktestEngine:
                 metrics = self._compute_metrics(equity_curve, signals)
 
                 # Quick WFA for efficiency + real OOS Sharpe
-                wfa = self.run_wfa(df, config['type'], config['parameters'], n_windows=3)
+                wfa = self.run_wfa(df, config['type'], config['parameters'], symbol_name=symbol_name, n_windows=3)
                 metrics['wfe'] = wfa['efficiency']
                 metrics['sharpeOOS'] = wfa.get('oosSharpe', 0)
 
@@ -462,7 +461,11 @@ class BacktestEngine:
         df_copy['hour'] = df_copy['time'].dt.hour
         df_copy['dayofweek'] = df_copy['time'].dt.dayofweek  # 0=Mon, 4=Fri
 
-        hours = list(range(9, 18))
+        # Custom sessions for heatmap based on market type
+        # Forex/Crypto: 0-23, Stock: 9-18
+        is_crypto = "BTC" in df_copy.columns or "ETH" in df_copy.columns or (hasattr(df_copy, 'name') and "USD" in str(df_copy.name)) # Simplified
+        
+        hours = list(range(0, 24)) if is_crypto else list(range(9, 21))
         days = list(range(5))
 
         heatmap = []

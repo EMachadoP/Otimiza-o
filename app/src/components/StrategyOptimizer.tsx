@@ -58,6 +58,8 @@ export function StrategyOptimizer({
   const [parameterRanges, setParameterRanges] = useState<Record<string, { min: number; max: number; step: number }>>({});
   const [optimizationCriteria, setOptimizationCriteria] = useState<'sharpe' | 'profitFactor' | 'winRate' | 'wfe'>('sharpe');
   const [showSuggestedFeedback, setShowSuggestedFeedback] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hasNoResults, setHasNoResults] = useState(false);
 
   // Inicializar ranges inteligentes baseados no tipo de estratégia
   const initializeSmartRanges = useCallback(() => {
@@ -141,6 +143,8 @@ export function StrategyOptimizer({
     setResults([]);
     setSelectedResult(null);
     setTotalTested(0);
+    setError(null);
+    setHasNoResults(false);
 
     setCurrentPhase('Preparando motor de computação vetorial Python...');
     setProgress(10);
@@ -184,15 +188,22 @@ export function StrategyOptimizer({
 
       setResults(optimizationResults);
       setTotalTested(data.totalTested || 0);
+
       if (optimizationResults.length > 0) {
         setSelectedResult(optimizationResults[0]);
+      } else {
+        setHasNoResults(true);
       }
 
       setProgress(100);
-      setCurrentPhase(
-        `Otimização concluída! ${data.totalTested} combinações processadas via motor vetorial.`
-      );
+      setCurrentPhase('Finalizando análise de robustez...');
+
+      // Delay slightly for smooth transition
+      setTimeout(() => {
+        setIsOptimizing(false);
+      }, 500);
     } catch (err: any) {
+      setError(err.message);
       setCurrentPhase(`Erro: ${err.message}`);
     } finally {
       setIsOptimizing(false);
@@ -249,6 +260,26 @@ export function StrategyOptimizer({
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+          {error && (
+            <Alert variant="destructive" className="bg-red-500/10 border-red-500/20 text-red-400 py-2">
+              <AlertDescription className="text-xs flex items-center justify-between">
+                <span>Erro na otimização: {error}</span>
+                <Button variant="ghost" size="sm" onClick={() => setError(null)} className="h-6 px-2 hover:bg-red-500/20 text-red-400">Limpar</Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {hasNoResults && !isOptimizing && (
+            <Alert className="bg-amber-500/10 border-amber-500/20 text-amber-500 py-3">
+              <Info className="h-4 w-4" />
+              <AlertDescription className="text-xs">
+                <strong>Nenhum resultado robusto encontrado.</strong><br />
+                As {totalTested} combinações testadas não passaram no filtro de robustez (WFA/Monte Carlo).
+                Tente aumentar os ranges de parâmetros ou mudar o critério de otimização.
+              </AlertDescription>
+            </Alert>
+          )}
+
           {!results.length && !isOptimizing && (
             <div className="space-y-4">
               <Alert className="bg-blue-500/10 border-blue-500/20 text-blue-400">

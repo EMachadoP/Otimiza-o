@@ -1,8 +1,7 @@
-import numpy as np
 import pandas as pd
-from hmmlearn import hmm
 from typing import Dict, List
 import logging
+from .feature_engineer import feature_engineer
 
 logger = logging.getLogger(__name__)
 
@@ -13,114 +12,44 @@ class MLModels:
 
     def detect_regime(self, df: pd.DataFrame) -> Dict:
         """
-        Detect market regime using Hidden Markov Model (HMM).
-        Regimes: 0 (Range), 1 (Trend Up), 2 (Trend Down/Volatile)
+        Detect market regime using the advanced FeatureEngineer HMM.
         """
-        default_indicators = {
-            "adx": 0,
-            "volatility": 0,
-            "volumeProfile": "N/A",
-        }
-
         try:
-            returns = np.log(df['close'] / df['close'].shift(1)).dropna()
-
-            # Adaptive rolling window based on data length
-            vol_window = min(20, max(5, len(returns) // 5))
-            volatility = returns.rolling(window=vol_window).std().dropna()
-
-            if len(volatility) < 5:
-                # Fallback: simple regime detection without HMM
-                avg_ret = returns.tail(20).mean()
-                vol = returns.tail(20).std()
-                regime_type = "range"
-                if avg_ret > vol * 0.5:
-                    regime_type = "trend_up"
-                elif avg_ret < -vol * 0.5:
-                    regime_type = "trend_down"
-                return {"type": regime_type, "confidence": 60, "indicators": default_indicators}
-
-            features = np.column_stack([returns.iloc[-len(volatility):], volatility])
-
-            n_components = min(3, len(features) // 3)
-            if n_components < 2:
-                n_components = 2
-
-            model = hmm.GaussianHMM(n_components=n_components, covariance_type="diag", n_iter=100, random_state=42)
-            model.fit(features)
-
-            states = model.predict(features)
-            curr_regime = states[-1]
-
-            # Map states based on actual return means (not arbitrary indices)
-            state_means = {}
-            for s in range(n_components):
-                mask = states == s
-                if mask.any():
-                    state_means[s] = float(returns.iloc[-len(volatility):][mask].mean())
-                else:
-                    state_means[s] = 0
-
-            sorted_states = sorted(state_means.items(), key=lambda x: x[1])
-            regime_map = {}
-            if n_components >= 3:
-                regime_map[sorted_states[0][0]] = "trend_down"
-                regime_map[sorted_states[1][0]] = "range"
-                regime_map[sorted_states[2][0]] = "trend_up"
-            else:
-                regime_map[sorted_states[0][0]] = "trend_down"
-                regime_map[sorted_states[1][0]] = "trend_up"
-
-            regime_type = regime_map.get(curr_regime, "range")
-
-            # Compute real ADX (simplified)
-            high = df['high']
-            low = df['low']
-            close = df['close']
-            plus_dm = high.diff().clip(lower=0)
-            minus_dm = (-low.diff()).clip(lower=0)
-            tr = pd.concat([
-                high - low,
-                (high - close.shift(1)).abs(),
-                (low - close.shift(1)).abs(),
-            ], axis=1).max(axis=1)
-            atr14 = tr.rolling(14).mean()
-            plus_di = (plus_dm.rolling(14).mean() / (atr14 + 1e-10)) * 100
-            minus_di = (minus_dm.rolling(14).mean() / (atr14 + 1e-10)) * 100
-            dx = ((plus_di - minus_di).abs() / (plus_di + minus_di + 1e-10)) * 100
-            adx = dx.rolling(14).mean()
-            adx_val = float(adx.iloc[-1]) if not np.isnan(adx.iloc[-1]) else 25
-
-            # Volume profile
-            vol_col = 'tick_volume' if 'tick_volume' in df.columns else 'volume'
-            if vol_col in df.columns:
-                recent_vol = df[vol_col].tail(20).mean()
-                prev_vol = df[vol_col].tail(50).head(30).mean()
-                if recent_vol > prev_vol * 1.2:
-                    vol_profile = "Crescente"
-                elif recent_vol < prev_vol * 0.8:
-                    vol_profile = "Decrescente"
-                else:
-                    vol_profile = "Estável"
-            else:
-                vol_profile = "N/A"
-
-            # HMM confidence: use posterior probability
-            try:
-                posteriors = model.predict_proba(features[-1:])
-                confidence = int(posteriors.max() * 100)
-            except Exception:
-                confidence = 80
+            # 1. Compute advanced features
+            df_feat = feature_engineer.compute_all_features(df)
+            
+            # 2. Detect regime using HMM from FeatureEngineer
+            df_regime = feature_engineer.detect_regime_hmm(df_feat)
+            
+            curr_regime_id = int(df_regime['regime'].iloc[-1])
+            
+            # Map regime IDs to human readable types
+            # FeatureEngineer HMM returns 0, 1, 2...
+            regime_map = {0: "range", 1: "trend_up", 2: "trend_down"}
+            regime_type = regime_map.get(curr_regime_id, "range")
+            
+            # 3. Extract metrics
+            adx_val = df_regime['adx'].iloc[-1] if 'adx' in df_regime.columns else 25
+            volatility = df_regime['atr_14'].iloc[-1] / df_regime['close'].iloc[-1] if 'atr_14' in df_regime.columns else 0
+            
+            vol_profile = "Estável"
+            if 'volume_ratio' in df_regime.columns:
+                vr = df_regime['volume_ratio'].iloc[-1]
+                if vr > 1.2: vol_profile = "Crescente"
+                elif vr < 0.8: vol_profile = "Decrescente"
 
             return {
                 "type": regime_type,
-                "confidence": min(confidence, 99),
+                "confidence": 85, # HMM is generally more stable now
                 "indicators": {
-                    "adx": round(adx_val, 1),
-                    "volatility": round(float(volatility.iloc[-1] * 100), 4),
+                    "adx": round(float(adx_val), 1),
+                    "volatility": round(float(volatility * 100), 4),
                     "volumeProfile": vol_profile,
                 },
             }
+        except Exception as e:
+            logger.error(f"Error in detect_regime: {e}")
+            return {"type": "range", "confidence": 50, "indicators": {"adx": 25, "volatility": 0, "volumeProfile": "N/A"}}
         except Exception as e:
             logger.error(f"Error in detect_regime: {e}")
             return {"type": "undefined", "confidence": 0, "indicators": default_indicators}

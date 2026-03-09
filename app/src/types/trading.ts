@@ -55,6 +55,7 @@ export interface Strategy {
   metrics: StrategyMetrics;
   status: 'approved' | 'testing' | 'rejected';
   createdAt: number;
+  pythonCode?: string;
 }
 
 export interface StrategyMetrics {
