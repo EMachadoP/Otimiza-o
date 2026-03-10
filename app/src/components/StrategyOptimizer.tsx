@@ -306,6 +306,12 @@ export function StrategyOptimizer({
 
   if (!strategy) return null;
 
+  const isTopRobust = selectedResult ? (
+    (selectedResult.metrics.sharpeOOS ?? 0) > 0 &&
+    (selectedResult.validation.pbo ?? 100) < 50 &&
+    (selectedResult.metrics.wfe ?? 0) > 0.1
+  ) : false;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[95vw] max-w-[1600px] bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none shadow-2xl">
@@ -558,21 +564,33 @@ export function StrategyOptimizer({
 
           {results.length > 0 && !isOptimizing && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-lg">
+              <div className={cn("flex items-center justify-between p-3 rounded-lg border", 
+                isTopRobust ? "bg-emerald-500/10 border-emerald-500/20" : "bg-red-500/10 border-red-500/20"
+              )}>
                 <div className="flex items-center gap-3">
-                  <ShieldCheck className="h-5 w-5 text-emerald-400" />
+                  {isTopRobust ? <ShieldCheck className="h-5 w-5 text-emerald-400" /> : <Info className="h-5 w-5 text-red-400" />}
                   <div>
-                    <p className="text-sm font-bold text-emerald-400">Certificado de Robustez Gerado</p>
-                    <p className="text-[10px] text-slate-400 italic">Foram testadas <strong>{totalTested} combinações</strong> em regime vetorizado. Os resultados abaixo são os mais estáveis estatisticamente.</p>
+                    <p className={cn("text-sm font-bold", isTopRobust ? "text-emerald-400" : "text-red-400")}>
+                      {isTopRobust ? "Certificado de Robustez Gerado" : "Estratégia Reprovada nos Testes de Estresse"}
+                    </p>
+                    <p className="text-[10px] text-slate-400 italic">
+                      Foram testadas <strong>{totalTested} combinações</strong> em regime vetorizado.
+                      {isTopRobust 
+                        ? " Os resultados abaixo são os mais estáveis estatisticamente." 
+                        : " A melhor configuração possui métricas de risco inaceitáveis (Sharpe negativo, overfitting alto ou eficiência muito baixa)."}
+                    </p>
                   </div>
                 </div>
               </div>
 
               {/* Melhor Configuração Selecionada/Top */}
               {selectedResult && (
-                <Card className="bg-gradient-to-br from-slate-800 to-slate-900 border-emerald-500/30 overflow-hidden relative shadow-xl">
+                <Card className={cn(
+                  "bg-gradient-to-br from-slate-800 to-slate-900 overflow-hidden relative shadow-xl border",
+                  isTopRobust ? "border-emerald-500/30" : "border-red-500/30"
+                )}>
                   <div className="absolute top-0 right-0 p-3">
-                    <Badge className="bg-emerald-500/20 text-emerald-400 border-none">
+                    <Badge className={cn("border-none", isTopRobust ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400")}>
                       Top Rank #{selectedResult.rank}
                     </Badge>
                   </div>
@@ -583,7 +601,7 @@ export function StrategyOptimizer({
                         {Object.entries(selectedResult.parameters).map(([key, value]) => (
                           <div key={key} className="bg-slate-900/80 border border-slate-700 rounded px-2.5 py-1 text-xs">
                             <span className="text-slate-500">{key}:</span>
-                            <span className="ml-2 font-mono text-emerald-400 font-bold">{value}</span>
+                            <span className={cn("ml-2 font-mono font-bold", isTopRobust ? "text-emerald-400" : "text-amber-400")}>{value}</span>
                           </div>
                         ))}
                       </div>
@@ -591,11 +609,11 @@ export function StrategyOptimizer({
 
                     <div className="grid grid-cols-5 gap-4 py-3 border-y border-slate-800/50">
                       {[
-                        { label: 'Sharpe OOS', value: selectedResult.metrics.sharpeOOS?.toFixed(2), color: 'emerald' },
-                        { label: 'WFE Efficiency', value: `${((selectedResult.metrics.wfe ?? 0) * 100).toFixed(0)}%`, color: 'blue' },
-                        { label: 'Profit Factor', value: selectedResult.metrics.profitFactor?.toFixed(2), color: 'purple' },
-                        { label: 'Win Rate', value: `${selectedResult.metrics.winRate}%`, color: 'amber' },
-                        { label: 'Max DD MC', value: `${selectedResult.metrics.maxDrawdownMC?.toFixed(1)}%`, color: 'red' }
+                        { label: 'Sharpe OOS', value: selectedResult.metrics.sharpeOOS?.toFixed(2), color: (selectedResult.metrics.sharpeOOS ?? 0) > 0 ? 'emerald' : 'red' },
+                        { label: 'WFE Efficiency', value: `${((selectedResult.metrics.wfe ?? 0) * 100).toFixed(0)}%`, color: (selectedResult.metrics.wfe ?? 0) >= 0.2 ? 'blue' : 'red' },
+                        { label: 'Profit Factor', value: selectedResult.metrics.profitFactor?.toFixed(2), color: (selectedResult.metrics.profitFactor ?? 0) > 1.0 ? 'purple' : 'red' },
+                        { label: 'Win Rate', value: `${selectedResult.metrics.winRate}%`, color: (selectedResult.metrics.winRate ?? 0) > 30 ? 'amber' : 'red' },
+                        { label: 'Max DD MC', value: `${selectedResult.metrics.maxDrawdownMC?.toFixed(1)}%`, color: (selectedResult.metrics.maxDrawdownMC ?? 100) < 40 ? 'emerald' : 'red' }
                       ].map((m, i) => (
                         <div key={i} className="text-center group">
                           <div className={`text-xl font-black text-${m.color}-400 group-hover:scale-110 transition-transform`}>
@@ -609,12 +627,12 @@ export function StrategyOptimizer({
                     <div className="flex items-center justify-between gap-4 pt-2">
                       <div className="flex gap-4 text-[10px]">
                         <div className="flex items-center gap-1.5">
-                          <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          <div className={cn("w-1.5 h-1.5 rounded-full", (selectedResult.validation.pbo ?? 100) < 50 ? "bg-emerald-500" : "bg-red-500")} />
                           <span className="text-slate-400">PBO: {selectedResult.validation.pbo?.toFixed(1)}% (Overfitting Risk)</span>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                          <span className="text-slate-400">Z-Score: 2.14 (Prob. do Sucesso)</span>
+                          <div className={cn("w-1.5 h-1.5 rounded-full", (selectedResult.metrics.sharpeOOS ?? 0) > 0 ? "bg-blue-500" : "bg-red-500")} />
+                          <span className="text-slate-400">Z-Score: OOS Sharpe {(selectedResult.metrics.sharpeOOS ?? 0).toFixed(2)}</span>
                         </div>
                       </div>
                       <div className="flex gap-2">
@@ -633,9 +651,9 @@ export function StrategyOptimizer({
                         <Button
                           onClick={handleApplyConfiguration}
                           size="sm"
-                          className="bg-emerald-600 hover:bg-emerald-700 text-xs h-9 px-8 font-bold shadow-lg shadow-emerald-600/20"
+                          className={cn("text-xs h-9 px-8 font-bold shadow-lg", isTopRobust ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/20" : "bg-red-600 hover:bg-red-700 shadow-red-600/20")}
                         >
-                          Confirmar e Ir para Exportação
+                          {isTopRobust ? "Confirmar e Ir para Exportação" : "Forçar Exportação Mesmo Reprovada"}
                           <ArrowRight className="h-3 w-3 ml-2" />
                         </Button>
                       </div>
