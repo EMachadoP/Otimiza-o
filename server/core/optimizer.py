@@ -77,12 +77,15 @@ def _evaluate_params_worker(args):
                 'maxDrawdownMC': mc['maxDrawdownP95']
             })
             
+            pbo = min(float((1 - wfa['efficiency']) * 100), 100)
+
             return {
                 "parameters": params,
                 "metrics": bt['metrics'],
                 "equityCurve": bt['equityCurve'],
                 "wfa": wfa,
-                "mc": mc
+                "mc": mc,
+                "pbo": pbo
             }
     except Exception as e:
         logger.error(f"Error in _evaluate_params_worker: {e}")
@@ -252,7 +255,8 @@ class ParameterOptimizer:
                             metrics=res['metrics'],
                             validation={
                                 "wfa": res.get('wfa'),
-                                "mc": res.get('mc')
+                                "mc": res.get('mc'),
+                                "pbo": res.get('pbo', 50.0)
                             }
                         ))
                 except Exception as e:

@@ -186,7 +186,25 @@ export function StrategyOptimizer({
             max: Number(range.max),
             step: Number(range.step)
           };
+        } else if (strategy.parameters[key] !== undefined) {
+          // Envia o parâmetro desabilitado como um valor fixo da estratégia original
+          finalRanges[key] = {
+            min: Number(strategy.parameters[key]),
+            max: Number(strategy.parameters[key]),
+            step: 1
+          };
         }
+      });
+
+      // Garante que TODOS os parâmetros orignais da estratégia sejam enviados (mesmo os que não aparecem na UI)
+      Object.entries(strategy.parameters).forEach(([key, val]) => {
+         if (!finalRanges[key]) {
+             finalRanges[key] = {
+                 min: Number(val),
+                 max: Number(val),
+                 step: 1
+             };
+         }
       });
 
       const response = await fetch('/api/optimize-stream', {
@@ -246,7 +264,7 @@ export function StrategyOptimizer({
                     wfa: r.validation?.wfa || { efficiency: 0, isCAGR: 0, oosCAGR: 0, windows: [] },
                     cpcv: { avgSharpe: r.metrics?.sharpeOOS || 0, sharpeStd: 0, purgedSplits: 6, embargoSize: 5, foldResults: [] },
                     monteCarlo: { simulations: 300, profitablePct: 0, maxDrawdownP95: r.metrics?.maxDrawdownMC || 0, maxDrawdownP99: 0, worstCaseEquity: 0, bestCaseEquity: 0, medianEquity: 0 },
-                    pbo: r.validation?.pbo || 50,
+                    pbo: r.validation?.pbo ?? 50,
                   } as ValidationResults,
                   rank: r.rank,
                 })
