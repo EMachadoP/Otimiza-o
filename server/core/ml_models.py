@@ -59,24 +59,89 @@ class MLModels:
         patterns = []
         try:
             # Candlestick Patterns
-            last_candle = df.iloc[-1]
-            body = abs(last_candle['open'] - last_candle['close'])
-            upper_wick = last_candle['high'] - max(last_candle['open'], last_candle['close'])
-            lower_wick = min(last_candle['open'], last_candle['close']) - last_candle['low']
+            if len(df) >= 3:
+                last_candle = df.iloc[-1]
+                prev_candle = df.iloc[-2]
+                prev_prev_candle = df.iloc[-3]
+                
+                body = abs(last_candle['open'] - last_candle['close'])
+                upper_wick = last_candle['high'] - max(last_candle['open'], last_candle['close'])
+                lower_wick = min(last_candle['open'], last_candle['close']) - last_candle['low']
+                is_bullish = last_candle['close'] > last_candle['open']
+                is_bearish = last_candle['close'] < last_candle['open']
+                
+                prev_body = abs(prev_candle['open'] - prev_candle['close'])
+                prev_is_bullish = prev_candle['close'] > prev_candle['open']
+                prev_is_bearish = prev_candle['close'] < prev_candle['open']
+                
+                range_candle = last_candle['high'] - last_candle['low']
+                
+                # Pin Bars (Hammer / Shooting Star equivalents)
+                if lower_wick > body * 2 and upper_wick < body * 0.5:
+                    patterns.append({
+                        "id": "pat_hammer", "type": "candlestick", "name": "Martelo (Rej. Baixa)",
+                        "timestamp": int(last_candle['time'].timestamp() * 1000),
+                        "direction": "up", "frequency": 1, "accuracy": 82,
+                    })
 
-            if lower_wick > body * 2:
-                patterns.append({
-                    "id": "pat_1", "type": "candlestick", "name": "Pin Bar Alta",
-                    "timestamp": int(last_candle['time'].timestamp() * 1000),
-                    "direction": "up", "frequency": 1, "accuracy": 82,
-                })
-
-            if upper_wick > body * 2:
-                patterns.append({
-                    "id": "pat_2", "type": "candlestick", "name": "Pin Bar Baixa",
-                    "timestamp": int(last_candle['time'].timestamp() * 1000),
-                    "direction": "down", "frequency": 1, "accuracy": 78,
-                })
+                elif upper_wick > body * 2 and lower_wick < body * 0.5:
+                    patterns.append({
+                        "id": "pat_shooting", "type": "candlestick", "name": "Estrela Cadente (Rej. Alta)",
+                        "timestamp": int(last_candle['time'].timestamp() * 1000),
+                        "direction": "down", "frequency": 1, "accuracy": 78,
+                    })
+                    
+                # Engulfing (Engolfo)
+                elif is_bullish and prev_is_bearish and body > prev_body and last_candle['close'] > prev_candle['open'] and last_candle['open'] < prev_candle['close']:
+                    patterns.append({
+                        "id": "pat_bull_eng", "type": "candlestick", "name": "Engolfo de Alta",
+                        "timestamp": int(last_candle['time'].timestamp() * 1000),
+                        "direction": "up", "frequency": 1, "accuracy": 85,
+                    })
+                elif is_bearish and prev_is_bullish and body > prev_body and last_candle['close'] < prev_candle['open'] and last_candle['open'] > prev_candle['close']:
+                    patterns.append({
+                        "id": "pat_bear_eng", "type": "candlestick", "name": "Engolfo de Baixa",
+                        "timestamp": int(last_candle['time'].timestamp() * 1000),
+                        "direction": "down", "frequency": 1, "accuracy": 85,
+                    })
+                    
+                # Doji
+                elif body <= (range_candle * 0.1) and range_candle > 0:
+                     patterns.append({
+                        "id": "pat_doji", "type": "candlestick", "name": "Doji (Indecisão)",
+                        "timestamp": int(last_candle['time'].timestamp() * 1000),
+                        "direction": "neutral", "frequency": 1, "accuracy": 60,
+                    })
+                     
+                # Marubozu
+                elif body >= (range_candle * 0.95) and range_candle > 0:
+                     direction_str = "up" if is_bullish else "down"
+                     name_str = "Marubozu de Alta" if is_bullish else "Marubozu de Baixa"
+                     patterns.append({
+                        "id": "pat_marubozu", "type": "candlestick", "name": name_str,
+                        "timestamp": int(last_candle['time'].timestamp() * 1000),
+                        "direction": direction_str, "frequency": 1, "accuracy": 88,
+                    })
+                     
+                # 3-Candle Patterns (Morning/Evening Star approach)
+                else:
+                    pp_is_bearish = prev_prev_candle['close'] < prev_prev_candle['open']
+                    pp_is_bullish = prev_prev_candle['close'] > prev_prev_candle['open']
+                    
+                    # Evening Star: Bullish, small body gap up, bearish closing well into first candle
+                    if pp_is_bullish and prev_body <= (prev_candle['high'] - prev_candle['low']) * 0.3 and is_bearish and last_candle['close'] < (prev_prev_candle['open'] + prev_prev_candle['close'])/2:
+                        patterns.append({
+                            "id": "pat_evening_star", "type": "candlestick", "name": "Estrela da Tarde",
+                            "timestamp": int(last_candle['time'].timestamp() * 1000),
+                            "direction": "down", "frequency": 1, "accuracy": 89,
+                        })
+                    # Morning Star: Bearish, small body gap down, bullish closing well into first candle
+                    elif pp_is_bearish and prev_body <= (prev_candle['high'] - prev_candle['low']) * 0.3 and is_bullish and last_candle['close'] > (prev_prev_candle['open'] + prev_prev_candle['close'])/2:
+                        patterns.append({
+                            "id": "pat_morning_star", "type": "candlestick", "name": "Estrela da Manhã",
+                            "timestamp": int(last_candle['time'].timestamp() * 1000),
+                            "direction": "up", "frequency": 1, "accuracy": 89,
+                        })
 
             # Geometric Patterns (Support / Resistance)
             window = 20
