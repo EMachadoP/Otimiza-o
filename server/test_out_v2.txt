@@ -1,0 +1,11 @@
+C:\Projetos\OtimizaþÒo\server\tests\test_backtest.py:33: FutureWarning: 'H' is deprecated and will be removed in a future version, please use 'h' instead.
+  'time': pd.date_range('2024-01-01', periods=100, freq='H'),
+.C:\Projetos\OtimizaþÒo\server\tests\test_backtest.py:20: FutureWarning: 'H' is deprecated and will be removed in a future version, please use 'h' instead.
+  'time': pd.date_range('2024-01-01', periods=10, freq='H')
+.C:\Projetos\OtimizaþÒo\server\tests\test_backtest.py:53: FutureWarning: 'H' is deprecated and will be removed in a future version, please use 'h' instead.
+  'time': pd.date_range('2024-01-01', periods=2, freq='H'),
+.
+----------------------------------------------------------------------
+Ran 3 tests in 0.041s
+
+OK

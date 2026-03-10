@@ -1,0 +1,23 @@
+C:\Projetos\OtimizaþÒo\server\tests\test_backtest.py:33: FutureWarning: 'H' is deprecated and will be removed in a future version, please use 'h' instead.
+  'time': pd.date_range('2024-01-01', periods=100, freq='H'),
+.C:\Projetos\OtimizaþÒo\server\tests\test_backtest.py:20: FutureWarning: 'H' is deprecated and will be removed in a future version, please use 'h' instead.
+  'time': pd.date_range('2024-01-01', periods=10, freq='H')
+.C:\Projetos\OtimizaþÒo\server\tests\test_backtest.py:53: FutureWarning: 'H' is deprecated and will be removed in a future version, please use 'h' instead.
+  'time': pd.date_range('2024-01-01', periods=2, freq='H'),
+F
+======================================================================
+FAIL: test_precise_sl_tp (__main__.TestBacktestEngine.test_precise_sl_tp)
+Testa se o SL/TP preciso funciona (intra-bar).
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Projetos\OtimizaþÒo\server\tests\test_backtest.py", line 68, in test_precise_sl_tp
+    self.assertGreater(result['metrics']['maxDrawdown'], 0)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0.0 not greater than 0
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.057s
+
+FAILED (failures=1)
+DEBUG Bar 1: Opened Position=-1, Entry=98.3488178484451, SL_Dist=None
+DEBUG Bar 1: Opened Position=1, Entry=101.0, SL_Dist=5.0

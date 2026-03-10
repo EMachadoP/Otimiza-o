@@ -175,8 +175,7 @@ export function StrategyOptimizer({
     setError(null);
     setHasNoResults(false);
 
-    setCurrentPhase('Preparando motor de computação vetorial Python...');
-    setProgress(10);
+    setCurrentPhase('Conectando ao motor de otimização SSE...');
 
     try {
       const finalRanges: Record<string, any> = {};
@@ -190,7 +189,7 @@ export function StrategyOptimizer({
         }
       });
 
-      const response = await fetch('http://localhost:8000/api/optimize', {
+      const response = await fetch('/api/optimize-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -203,50 +202,80 @@ export function StrategyOptimizer({
         }),
       });
 
-      setCurrentPhase(`Processando Backtests + WFA + Monte Carlo (${totalCombinations} combinações)...`);
-      setProgress(50);
-
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const data = await response.json();
-      setProgress(90);
-
-      const optimizationResults: OptimizationResult[] = (data.results || []).map(
-        (r: any) => ({
-          parameters: r.parameters,
-          metrics: r.metrics as StrategyMetrics,
-          validation: {
-            wfa: r.validation?.wfa || { efficiency: 0, isCAGR: 0, oosCAGR: 0, windows: [] },
-            cpcv: { avgSharpe: r.metrics?.sharpeOOS || 0, sharpeStd: 0, purgedSplits: 6, embargoSize: 5, foldResults: [] },
-            monteCarlo: { simulations: 300, profitablePct: 0, maxDrawdownP95: r.metrics?.maxDrawdownMC || 0, maxDrawdownP99: 0, worstCaseEquity: 0, bestCaseEquity: 0, medianEquity: 0 },
-            pbo: r.validation?.pbo || 50,
-          } as ValidationResults,
-          rank: r.rank,
-        })
-      );
-
-      setResults(optimizationResults);
-      setTotalTested(data.totalTested || 0);
-
-      if (optimizationResults.length > 0) {
-        setSelectedResult(optimizationResults[0]);
-      } else {
-        setHasNoResults(true);
+      if (!response.body) {
+        throw new Error('ReadableStream não disponível');
       }
 
-      setProgress(100);
-      setCurrentPhase('Finalizando análise de robustez...');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-      // Delay slightly for smooth transition
-      setTimeout(() => {
-        setIsOptimizing(false);
-      }, 500);
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
+
+          const dataStr = trimmedLine.slice(6);
+          try {
+            const data = JSON.parse(dataStr);
+
+            if (data.progress !== undefined) setProgress(data.progress);
+            if (data.phase) setCurrentPhase(data.phase);
+
+            if (data.error) {
+              throw new Error(`BACKEND_ERROR:${data.error}`);
+            }
+
+            if (data.results) {
+              const optimizationResults: OptimizationResult[] = (data.results || []).map(
+                (r: any) => ({
+                  parameters: r.parameters,
+                  metrics: r.metrics as StrategyMetrics,
+                  validation: {
+                    wfa: r.validation?.wfa || { efficiency: 0, isCAGR: 0, oosCAGR: 0, windows: [] },
+                    cpcv: { avgSharpe: r.metrics?.sharpeOOS || 0, sharpeStd: 0, purgedSplits: 6, embargoSize: 5, foldResults: [] },
+                    monteCarlo: { simulations: 300, profitablePct: 0, maxDrawdownP95: r.metrics?.maxDrawdownMC || 0, maxDrawdownP99: 0, worstCaseEquity: 0, bestCaseEquity: 0, medianEquity: 0 },
+                    pbo: r.validation?.pbo || 50,
+                  } as ValidationResults,
+                  rank: r.rank,
+                })
+              );
+
+              setResults(optimizationResults);
+              setTotalTested(data.totalTested || 0);
+
+              if (optimizationResults.length > 0) {
+                setSelectedResult(optimizationResults[0]);
+              } else {
+                setHasNoResults(true);
+              }
+
+              setProgress(100);
+              setCurrentPhase('Otimização concluída!');
+              setTimeout(() => setIsOptimizing(false), 800);
+            }
+          } catch (e: any) {
+            if (e.message && e.message.startsWith('BACKEND_ERROR:')) {
+              throw new Error(e.message.replace('BACKEND_ERROR:', ''));
+            }
+            console.error('Erro ao processar mensagem SSE:', e);
+          }
+        }
+      }
     } catch (err: any) {
-      setError(err.message);
-      setCurrentPhase(`Erro: ${err.message}`);
-    } finally {
+      console.error('Erro na otimização streaming:', err);
+      setError(err.message || 'Falha na otimização');
       setIsOptimizing(false);
     }
   };

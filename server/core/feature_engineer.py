@@ -32,12 +32,16 @@ class FeatureEngineer:
         if blocks is None:
             blocks = ['trend', 'momentum', 'volatility', 'volume', 'derived', 'micro']
             
-        if 'trend' in blocks: df = self._add_trend_features(df)
-        if 'momentum' in blocks: df = self._add_momentum_features(df)
-        if 'volatility' in blocks: df = self._add_volatility_features(df)
-        if 'volume' in blocks: df = self._add_volume_features(df)
-        if 'derived' in blocks: df = self._add_derived_features(df)
-        if 'micro' in blocks: df = self._add_microstructure_features(df)
+        for block in blocks:
+            try:
+                if block == 'trend': df = self._add_trend_features(df)
+                elif block == 'momentum': df = self._add_momentum_features(df)
+                elif block == 'volatility': df = self._add_volatility_features(df)
+                elif block == 'volume': df = self._add_volume_features(df)
+                elif block == 'derived': df = self._add_derived_features(df)
+                elif block == 'micro': df = self._add_microstructure_features(df)
+            except Exception as e:
+                logger.error(f"Error computing feature block '{block}': {e}")
         
         return df
     
@@ -70,12 +74,17 @@ class FeatureEngineer:
             df['psar'] = psar['PSARl_0.02_0.2'] # Fixed key name
         
         # Ichimoku
-        ichimoku, _ = ta.ichimoku(df['high'], df['low'], close)
-        if ichimoku is not None:
-            df['ichi_tenkan'] = ichimoku['ITS_9']
-            df['ichi_kijun'] = ichimoku['IKS_26']
-            df['ichi_senkou_a'] = ichimoku['ISA_9']
-            df['ichi_senkou_b'] = ichimoku['ISB_26']
+        try:
+            ichimoku, _ = ta.ichimoku(df['high'], df['low'], close)
+            if ichimoku is not None:
+                # Use fuzzy match for keys as they may contain period suffixes
+                for col in ichimoku.columns:
+                    if col.startswith('ITS'): df['ichi_tenkan'] = ichimoku[col]
+                    elif col.startswith('IKS'): df['ichi_kijun'] = ichimoku[col]
+                    elif col.startswith('ISA'): df['ichi_senkou_a'] = ichimoku[col]
+                    elif col.startswith('ISB'): df['ichi_senkou_b'] = ichimoku[col]
+        except Exception as e:
+            logger.warning(f"Ichimoku failed: {e}")
         
         return df
     
@@ -124,8 +133,9 @@ class FeatureEngineer:
             df['bb_lower'] = bb.iloc[:, 0]
             df['bb_middle'] = bb.iloc[:, 1]
             df['bb_upper'] = bb.iloc[:, 2]
-            df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
-            df['bb_percent'] = (close - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+            bb_range = (df['bb_upper'] - df['bb_lower'])
+            df['bb_width'] = bb_range / (df['bb_middle'] + 1e-10)
+            df['bb_percent'] = (close - df['bb_lower']) / (bb_range + 1e-10)
         
         # Keltner Channels
         kc = ta.kc(df['high'], df['low'], close, length=20, scalar=2)
@@ -209,51 +219,58 @@ class FeatureEngineer:
         
         return df
     
-    def detect_regime_hmm(self, df: pd.DataFrame, n_states: int = 3, train_idx: Optional[int] = None) -> pd.DataFrame:
+    def detect_regime_hmm(self, df: pd.DataFrame, n_states: int = 3, 
+                           train_end_idx: Optional[int] = None) -> pd.DataFrame:
         """
-        Detecta regimes de mercado usando Hidden Markov Model.
-        Se train_idx for informado, treina apenas até aquele índice (evita look-ahead bias).
+        Detecta regimes de mercado usando HMM.
+        
+        Args:
+            train_end_idx: Índice final do conjunto de treino (para evitar vazamento)
         """
         df = df.copy()
         
         # Features para HMM
-        # IMPORTANTE: Usamos retornos e volatilidade curta para o HMM
-        df_hmm = df.copy()
-        if 'returns_hmm' not in df_hmm.columns:
-            df_hmm['returns_hmm'] = df_hmm['close'].pct_change()
-        if 'vol_hmm' not in df_hmm.columns:
-            df_hmm['vol_hmm'] = df_hmm['returns_hmm'].rolling(20).std()
-            
-        combined = df_hmm[['returns_hmm', 'vol_hmm']].dropna()
+        returns = df['close'].pct_change().dropna()
+        volatility = returns.rolling(20).std()
         
-        if len(combined) < 100:
+        features = pd.DataFrame({
+            'returns': returns,
+            'volatility': volatility
+        }).dropna()
+        
+        if len(features) < 100:
             df['regime'] = 0
             return df
         
-        # Isolar dados de treino
-        if train_idx is not None:
-            # Encontrar posição correspondente no combined index
-            train_end_pos = combined.index.get_indexer([df.index[min(train_idx, len(df)-1)]], method='pad')[0]
-            train_data = combined.values[:max(50, train_end_pos)]
+        # Determinar conjunto de treino (evita look-ahead bias)
+        if train_end_idx is not None:
+            # Garantir que o índice está dentro do range de features
+            train_limit = min(train_end_idx, len(features) - 1)
+            train_features = features.iloc[:train_limit]
+            predict_features = features
         else:
-            train_data = combined.values
-            
-        # Treinar HMM
+            train_features = features
+            predict_features = features
+        
+        # Treinar HMM apenas no treino
         try:
-            hmm = GaussianHMM(n_components=n_states, covariance_type="full", n_iter=100, random_state=42)
-            hmm.fit(train_data)
+            hmm = GaussianHMM(
+                n_components=n_states, 
+                covariance_type="full", 
+                n_iter=100, 
+                random_state=42
+            )
+            hmm.fit(train_features.values)
             
-            # Prever regimes na série inteira
-            regimes = hmm.predict(combined.values)
+            # Prever em todo o conjunto (mas modelo treinado só no treino)
+            regimes = hmm.predict(predict_features.values)
             
-            # Adicionar ao DataFrame original
-            df['regime'] = 0
-            df.loc[combined.index, 'regime'] = regimes
+            df.loc[predict_features.index, 'regime'] = regimes
             df['regime'] = df['regime'].ffill().fillna(0)
         except Exception as e:
             logger.error(f"Erro no HMM: {e}")
             df['regime'] = 0
-            
+        
         return df
     
     def select_features(self, df: pd.DataFrame, target_col: str = 'future_return', n_features: int = 20, train_idx: Optional[int] = None) -> List[str]:

@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import type { BacktestResult, Strategy, ValidationResults } from '@/types/trading';
 
-const API_BASE_URL = 'http://localhost:8000/api';
+const API_BASE_URL = '/api';
 
 export function useBacktest() {
   const [backtestResults, setBacktestResults] = useState<BacktestResult[]>([]);

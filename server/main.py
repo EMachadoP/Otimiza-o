@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sse_starlette.sse import EventSourceResponse
 from contextlib import asynccontextmanager
 from typing import Dict
 import uvicorn
@@ -307,6 +308,52 @@ async def optimize(payload: Dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/optimize-stream")
+async def optimize_stream(payload: Dict):
+    """Run strategy optimization with real-time SSE progress updates."""
+    symbol = payload.get("symbol", "EURUSD")
+    timeframe = payload.get("timeframe", "H1")
+    strategy_type = payload.get("type", "trend")
+    param_ranges = payload.get("paramRanges", {})
+    criteria = payload.get("criteria", "sharpe")
+    period = payload.get("period", "6M")
+    
+    count = get_count_from_period(period, timeframe)
+    
+    logger.info(f"Otimizador Streaming: Recebida requisição para {strategy_type} em {symbol} (period={period})")
+    
+    # 1. Get Data
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=count)
+    if df is None or df.empty:
+        raise HTTPException(status_code=400, detail="Sem dados disponíveis no MT5")
+        
+    # 2. Add Basic Features (Fast enough to run before stream initiation)
+    df = feature_engineer.compute_all_features(df, blocks=['trend', 'momentum', 'volatility'])
+    
+    # 3. Create Event Generator
+    async def event_generator():
+        try:
+            async for update in optimizer.optimize_stream(
+                df=df,
+                strategy_type=strategy_type,
+                param_ranges=param_ranges,
+                criteria=criteria,
+                symbol_name=symbol
+            ):
+                yield {
+                    "event": "message",
+                    "data": update
+                }
+        except Exception as e:
+            logger.error(f"Erro no stream de otimização: {e}", exc_info=True)
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(e)})
+            }
+
+    return EventSourceResponse(event_generator())
+
+
 @app.post("/api/convert-mql")
 async def convert_mql(payload: Dict):
     """Convert MQL4/5 code into a Python strategy."""
@@ -382,4 +429,5 @@ async def export_ea(payload: Dict):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Enable reload to pick up code changes automatically
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

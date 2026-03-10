@@ -12,8 +12,10 @@ from dataclasses import dataclass, asdict
 
 import hashlib
 import json
+import optuna
+import asyncio
+import time
 from functools import lru_cache
-from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
 # Cache simples em memória (pode ser Redis em produção)
@@ -82,7 +84,8 @@ def _evaluate_params_worker(args):
                 "wfa": wfa,
                 "mc": mc
             }
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error in _evaluate_params_worker: {e}")
         return None
 
 
@@ -126,6 +129,155 @@ class ParameterOptimizer:
                 expanded[key] = [r]
         return expanded
 
+    async def optimize_stream(
+        self,
+        df: pd.DataFrame,
+        strategy_type: str,
+        param_ranges: Dict[str, Dict[str, float]],
+        criteria: str = 'sharpe',
+        n_top: int = 20,
+        symbol_name: str = "EURUSD"
+    ):
+        """
+        Streaming version of the multi-stage optimization funnel.
+        Yields JSON status updates.
+        """
+        self.symbol = symbol_name
+        
+        yield json.dumps({"progress": 5, "phase": "Explorando espaço de parâmetros..."})
+        
+        expanded_ranges = self._generate_grid_from_ranges(param_ranges)
+        total_combos = 1
+        for vals in expanded_ranges.values():
+            total_combos *= len(vals)
+        
+        MAX_GRID_COMBOS = 10000
+        is_optuna = total_combos > MAX_GRID_COMBOS
+        
+        if is_optuna:
+            yield json.dumps({"progress": 10, "phase": f"Espaço gigante ({total_combos:,}). Ativando Motor Bayesiano Optuna...", "totalCombinations": total_combos})
+            
+            # Optuna Bayesian Optimization
+            def objective(trial):
+                params = {}
+                for key, r in param_ranges.items():
+                    if isinstance(r, dict) and "min" in r and "max" in r:
+                        mn, mx, step = r["min"], r["max"], r.get("step", 1)
+                        if isinstance(mn, int) and isinstance(mx, int) and isinstance(step, int) and step >= 1:
+                            params[key] = trial.suggest_int(key, mn, mx, step=step)
+                        else:
+                            params[key] = round(trial.suggest_float(key, mn, mx, step=step), 4)
+                
+                # Para o Optuna, fazemos apenas o backtest rápido inicialmente
+                metrics = self.backtest_engine.run_backtest(df, strategy_type, params, symbol_name=symbol_name, fast=True)
+                score = metrics.get(criteria, 0)
+                if np.isnan(score) or np.isinf(score): return -1e9
+                return score
+
+            study = optuna.create_study(direction="maximize")
+            n_trials = 500 # Cap para velocidade no streaming
+            
+            candidates = []
+            for i in range(n_trials):
+                trial = study.ask()
+                value = objective(trial)
+                study.tell(trial, value)
+                
+                if i % 50 == 0:
+                    prog = 10 + int((i / n_trials) * 60)
+                    yield json.dumps({"progress": prog, "phase": f"Busca Bayesiana: {i}/{n_trials} trials..."})
+                
+                params = trial.params
+                candidates.append({"parameters": params, "metrics": {"sharpeIS": value}})
+
+            candidates.sort(key=lambda x: x['metrics'].get('sharpeIS', -1e9), reverse=True)
+            top_candidates = candidates[:30]
+            
+        else:
+            yield json.dumps({"progress": 10, "phase": f"Iniciando Grid Search Vectorizado ({total_combos} combinações)...", "totalCombinations": total_combos})
+            
+            def get_combinations():
+                keys = expanded_ranges.keys()
+                for values in product(*expanded_ranges.values()):
+                    yield dict(zip(keys, values))
+
+            combinations = list(get_combinations())
+            candidates = []
+            
+            with ProcessPoolExecutor(
+                max_workers=self.max_workers, 
+                initializer=_init_worker, 
+                initargs=(df, symbol_name, self.backtest_engine)
+            ) as executor:
+                args = [(combo, strategy_type, True) for combo in combinations]
+                
+                # Usar submit e iterar os futures de forma a permitir await asyncio.sleep(0)
+                futures = {executor.submit(_evaluate_params_worker, arg): arg for arg in args}
+                i = 0
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result and "error" not in result.get("metrics", {}):
+                            candidates.append(result)
+                    except Exception as e:
+                        logger.error(f"Worker crashed during initial screening: {e}")
+
+                    i += 1
+                    if i % 100 == 0 or i == len(args):
+                        prog = 10 + int((i / len(args)) * 60)
+                        yield json.dumps({"progress": prog, "phase": f"Triagem Inicial: {i}/{len(args)}..."})
+                        await asyncio.sleep(0.01) # Cede controle para o event loop e evita hang do SSE
+
+            candidates.sort(key=lambda x: x['metrics'].get('sharpeIS', -0.5), reverse=True)
+            top_candidates = candidates[:30]
+
+        yield json.dumps({"progress": 75, "phase": f"Validando Top {len(top_candidates)} com WFA + Monte Carlo..."})
+        
+        final_results = []
+        with ProcessPoolExecutor(
+            max_workers=self.max_workers, 
+            initializer=_init_worker, 
+            initargs=(df, symbol_name, self.backtest_engine)
+        ) as executor:
+            args = [(c['parameters'], strategy_type, False) for c in top_candidates]
+            
+            futures = {executor.submit(_evaluate_params_worker, arg): arg for arg in args}
+            i = 0
+            for future in as_completed(futures):
+                try:
+                    res = future.result()
+                    if res and "error" not in res.get("metrics", {}):
+                        final_results.append(OptimizationResult(
+                            parameters=res['parameters'],
+                            metrics=res['metrics'],
+                            validation={
+                                "wfa": res.get('wfa'),
+                                "mc": res.get('mc')
+                            }
+                        ))
+                except Exception as e:
+                    logger.error(f"Worker crashed during robust validation: {e}")
+                
+                i += 1
+                prog = 75 + int((i / len(args)) * 20)
+                yield json.dumps({"progress": prog, "phase": f"Validação Robusta: {i}/{len(args)}..."})
+                await asyncio.sleep(0.01)
+
+        final_results.sort(key=lambda x: x.metrics.get(criteria, -1e9), reverse=True)
+        for i, res in enumerate(final_results):
+            res.rank = i + 1
+            res.metrics = _sanitize_metrics(res.metrics)
+            
+        output = {
+            "progress": 100,
+            "phase": "Concluído!",
+            "totalSearchSpace": total_combos,
+            "totalTested": 500 if is_optuna else total_combos,
+            "results": [asdict(r) for r in final_results[:n_top]]
+        }
+        
+        yield json.dumps(output)
+
     def optimize(
         self,
         df: pd.DataFrame,
@@ -136,112 +288,15 @@ class ParameterOptimizer:
         symbol_name: str = "EURUSD"
     ) -> Dict:
         """
-        3-Stage Optimization Funnel with Caching and Improved Parallelization.
+        Original block for backwards compatibility.
         """
-        self.symbol = symbol_name
+        async def run_sync():
+            res = None
+            async for update in self.optimize_stream(df, strategy_type, param_ranges, criteria, n_top, symbol_name):
+                res = json.loads(update)
+            return res
         
-        # Verificar cache
-        cache_key = _get_cache_key(df, strategy_type, param_ranges, criteria)
-        if cache_key in _optimization_cache:
-            logger.info("Usando resultado em cache")
-            return _optimization_cache[cache_key]
-
-        expanded_ranges = self._generate_grid_from_ranges(param_ranges)
-            
-        MAX_GRID_COMBOS = 5000 
-        
-        # Generator for combinations to save memory
-        def get_combinations():
-            keys = expanded_ranges.keys()
-            for values in product(*expanded_ranges.values()):
-                yield dict(zip(keys, values))
-
-        total_combos = 1
-        for vals in expanded_ranges.values():
-            total_combos *= len(vals)
-            
-        is_random = total_combos > MAX_GRID_COMBOS
-        n_trials = 500 if is_random else total_combos
-        
-        logger.info(f"Otimizador: Estágio 1 (Triagem) - {n_trials} candidatos.")
-        
-        # Stage 1: Fast Screening using initializer to avoid repeated df serialization
-        candidates = []
-        with ProcessPoolExecutor(
-            max_workers=self.max_workers, 
-            initializer=_init_worker, 
-            initargs=(df, symbol_name, self.backtest_engine)
-        ) as executor:
-            
-            if is_random:
-                import random
-                # Memory efficient sampling from product without creating the full list
-                keys = expanded_ranges.keys()
-                vals = list(expanded_ranges.values())
-                combinations = []
-                # Simple random selection from coordinates
-                indices = set()
-                while len(indices) < n_trials:
-                    idx = tuple(random.randint(0, len(v) - 1) for v in vals)
-                    if idx not in indices:
-                        indices.add(idx)
-                        combinations.append(dict(zip(keys, [vals[i][idx[i]] for i in range(len(vals))])))
-            else:
-                combinations = list(get_combinations())
-            
-            args = [(combo, strategy_type, True) for combo in combinations]
-            
-            for i, result in enumerate(executor.map(_evaluate_params_worker, args)):
-                if result:
-                    candidates.append(result)
-                else:
-                    logger.debug(f"Stage 1: Candidate failed filter.")
-
-        # Sort and take top candidates for Stage 3
-        candidates.sort(key=lambda x: x['metrics'].get('sharpeIS', 0), reverse=True)
-        top_candidates = candidates[:30]
-        
-        logger.info(f"Otimizador: Estágio 3 (Validação Full) - {len(top_candidates)} candidatos.")
-        
-        # Stage 3: Full Validation
-        final_results = []
-        with ProcessPoolExecutor(
-            max_workers=self.max_workers, 
-            initializer=_init_worker, 
-            initargs=(df, symbol_name, self.backtest_engine)
-        ) as executor:
-            args = [(c['parameters'], strategy_type, False) for c in top_candidates]
-            
-            for i, res in enumerate(executor.map(_evaluate_params_worker, args)):
-                if res:
-                    final_results.append(OptimizationResult(
-                        parameters=res['parameters'],
-                        metrics=res['metrics'],
-                        validation={
-                            "wfa": res.get('wfa'),
-                            "mc": res.get('mc')
-                        }
-                    ))
-                else:
-                    logger.warning(f"Stage 3: Candidate failed full validation.")
-        
-        # Final ranking
-        final_results.sort(key=lambda x: x.metrics.get(criteria, 0), reverse=True)
-        for i, res in enumerate(final_results):
-            res.rank = i + 1
-            res.metrics = _sanitize_metrics(res.metrics)
-            
-        output = {
-            "totalSearchSpace": total_combos,
-            "totalTested": n_trials,
-            "bestConfig": asdict(final_results[0]) if final_results else None,
-            "results": [asdict(r) for r in final_results[:n_top]]
-        }
-        
-        # Salvar no cache
-        _optimization_cache[cache_key] = output
-        
-        return output
+        return asyncio.run(run_sync())
         
     optimize_strategy = optimize # Alias for compatibility
 
@@ -261,7 +316,6 @@ class ParameterOptimizer:
         
         results = []
         
-        # Uso de ProcessPoolExecutor para CPU-bound backtests
         with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {}
             for combo in combinations:
@@ -284,7 +338,6 @@ class ParameterOptimizer:
                 except Exception as e:
                     logger.error(f"Erro em grid_search: {e}")
 
-        # Ordenar e rankear
         results = self._sort_by_criteria(results, criteria)
         for i, r in enumerate(results[:n_top]):
             r.rank = i + 1
@@ -350,23 +403,16 @@ class ParameterOptimizer:
     ) -> Optional[Dict]:
         """Avalia uma única combinação de parâmetros com validação completa."""
         try:
-            # 1. Backtest Vetorizado
             result = self.backtest_engine.run_backtest(df, strategy_type, params, symbol_name=symbol_name)
             if 'error' in result:
                 return None
             
             metrics = result['metrics']
-            
-            # 2. Validação Walk-Forward (3 janelas para velocidade na otimização)
             wfa = self.backtest_engine.run_wfa(df, strategy_type, params, symbol_name=symbol_name, n_windows=3)
             metrics['wfe'] = wfa['efficiency']
             metrics['sharpeOOS'] = wfa.get('oosSharpe', 0)
-            
-            # 3. Monte Carlo Rápido (200 simulações)
             mc = self.backtest_engine.run_monte_carlo(df, strategy_type, params, symbol_name=symbol_name, n_simulations=200)
             metrics['maxDrawdownMC'] = mc['maxDrawdownP95']
-            
-            # 4. Cálculo de PBO (baseado na eficiência do WFA)
             pbo = min(float((1 - wfa['efficiency']) * 100), 100)
             
             return {

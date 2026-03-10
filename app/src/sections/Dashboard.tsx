@@ -44,8 +44,10 @@ export function Dashboard() {
     mlInsights,
     loading,
     error,
+    selectedPeriod,
     setSelectedSymbol,
     setSelectedTimeframe,
+    setSelectedPeriod,
     refreshData
   } = useTradingData();
 
@@ -191,7 +193,10 @@ export function Dashboard() {
 
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-400">Período:</span>
-            <Select defaultValue="6M">
+            <Select
+              value={selectedPeriod}
+              onValueChange={setSelectedPeriod}
+            >
               <SelectTrigger className="w-24 bg-slate-800 border-slate-700">
                 <SelectValue />
               </SelectTrigger>
@@ -328,6 +333,7 @@ export function Dashboard() {
                   onViewDetails={handleViewDetails}
                   onExportEA={handleExportEA}
                   onOptimize={handleOptimizeStrategy}
+                  onGenerateParams={handleOptimizeStrategy}
                 />
               </CardContent>
             </Card>
@@ -466,6 +472,7 @@ export function Dashboard() {
         strategy={selectedStrategy}
         symbol={selectedSymbol}
         timeframe={selectedTimeframe}
+        period={selectedPeriod}
         open={showOptimizer}
         onOpenChange={setShowOptimizer}
         onOptimized={handleOptimizedStrategy}
