@@ -1,15 +1,16 @@
 {
-    "name": "tradestrategist-pro",
-    "version": "1.0.0",
-    "description": "Sistema de Análise e Recomendação de Estratégias de Trading",
-    "main": "server/main.py",
-    "scripts": {
-        "install:all": "pip install -r requirements.txt && cd app && npm install",
-        "dev:backend": "python server/main.py",
-        "dev:frontend": "npm run dev --prefix app",
-        "dev": "npx concurrently -n \"BACKEND,FRONTEND\" -c \"bgBlue.bold,bgMagenta.bold\" \"npm run dev:backend\" \"npm run dev:frontend\""
-    },
-    "devDependencies": {
-        "concurrently": "^8.2.2"
-    }
+  "name": "tradestrategist-pro",
+  "version": "1.0.0",
+  "description": "Sistema de Análise e Recomendação de Estratégias de Trading",
+  "main": "server/main.py",
+  "scripts": {
+    "install:all": "pip install -r requirements.txt && cd app && npm install",
+    "dev:backend": "python server/main.py",
+    "dev:frontend": "npm run dev --prefix app",
+    "dev": "npm run sync:repo && npx concurrently -n \"BACKEND,FRONTEND\" -c \"bgBlue.bold,bgMagenta.bold\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "sync:repo": "powershell -ExecutionPolicy Bypass -File scripts/sync-repo.ps1"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
 }

@@ -33,6 +33,7 @@ interface ParsedEA {
   }>;
   indicators: string[];
   code: string;
+  restoredStrategy?: Partial<Strategy>;
 }
 
 interface EAImporterProps {
@@ -40,6 +41,82 @@ interface EAImporterProps {
   onOpenChange: (open: boolean) => void;
   onImport: (strategy: Strategy) => void;
 }
+
+const NON_OPTIMIZED_PARAMS = new Set([
+  'lotsize',
+  'magicnumber',
+  'maxspread',
+  'usetrailingstop',
+  'trailingstop',
+  'smoothing',
+]);
+
+const PARAM_ALIASES: Record<string, string> = {
+  fastema: 'fastEMA',
+  fastperiod: 'fastEMA',
+  slowema: 'slowEMA',
+  slowperiod: 'slowEMA',
+  signalema: 'signalEMA',
+  signalperiod: 'signalEMA',
+  rsiperiod: 'rsiPeriod',
+  overbought: 'overbought',
+  oversold: 'oversold',
+  bbperiod: 'bbPeriod',
+  bbstd: 'bbStd',
+  period: 'period',
+  std: 'std',
+  stddev: 'std',
+  stoploss: 'stopLoss',
+  takeprofit: 'takeProfit',
+};
+
+function normalizeImportedType(type: string | undefined): Strategy['type'] {
+  const normalized = String(type || 'trend').toLowerCase();
+  if (normalized === 'donchian') return 'donchian';
+  if (normalized === 'reversal') return 'reversal';
+  if (normalized === 'breakout') return 'breakout';
+  if (normalized === 'scalping') return 'scalping';
+  if (normalized === 'mean_reversion') return 'mean_reversion';
+  return 'trend';
+}
+
+function normalizeImportedParamName(name: string): string | null {
+  const cleaned = name.replace(/^Inp/, '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  if (!cleaned || NON_OPTIMIZED_PARAMS.has(cleaned)) {
+    return null;
+  }
+  return PARAM_ALIASES[cleaned] || null;
+}
+
+const OPTIMIZABLE_PARAMS_BY_TYPE: Record<Strategy['type'], string[]> = {
+  trend: ['fastEMA', 'slowEMA', 'signalEMA', 'stopLoss', 'takeProfit'],
+  reversal: ['rsiPeriod', 'overbought', 'oversold', 'stopLoss', 'takeProfit'],
+  breakout: ['bbPeriod', 'bbStd', 'stopLoss', 'takeProfit'],
+  scalping: ['fastEMA', 'slowEMA', 'rsiPeriod', 'stopLoss', 'takeProfit'],
+  mean_reversion: ['period', 'std', 'stopLoss', 'takeProfit'],
+  donchian: ['period', 'stopLoss', 'takeProfit'],
+};
+
+function filterSupportedParameters(type: Strategy['type'], params: Record<string, number>): Record<string, number> {
+  const allowed = new Set(OPTIMIZABLE_PARAMS_BY_TYPE[type] || []);
+  return Object.fromEntries(
+    Object.entries(params || {}).filter(([key, value]) => allowed.has(key) && Number.isFinite(Number(value)))
+  );
+}
+
+function withStrategyDefaults(type: Strategy['type'], params: Record<string, number>): Record<string, number> {
+  const defaults: Record<Strategy['type'], Record<string, number>> = {
+    trend: { fastEMA: 9, slowEMA: 21, stopLoss: 50, takeProfit: 100 },
+    reversal: { rsiPeriod: 14, overbought: 70, oversold: 30, stopLoss: 40, takeProfit: 80 },
+    breakout: { bbPeriod: 20, bbStd: 2, stopLoss: 60, takeProfit: 120 },
+    scalping: { fastEMA: 5, slowEMA: 13, rsiPeriod: 7, stopLoss: 20, takeProfit: 40 },
+    mean_reversion: { period: 20, std: 2, stopLoss: 30, takeProfit: 60 },
+    donchian: { period: 20, stopLoss: 50, takeProfit: 150 },
+  };
+
+  return { ...defaults[type], ...params };
+}
+
 
 // Parser moved to backend for higher fidelity
 
@@ -151,7 +228,7 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
   const [parseError, setParseError] = useState<string | null>(null);
   const [editedParams, setEditedParams] = useState<Record<string, string>>({});
   const [strategyName, setStrategyName] = useState('');
-  const [strategyType, setStrategyType] = useState<'trend' | 'reversal' | 'breakout' | 'scalping' | 'mean_reversion'>('trend');
+  const [strategyType, setStrategyType] = useState<Strategy['type']>('trend');
 
   const handleParse = async () => {
     if (!code.trim()) return;
@@ -194,12 +271,21 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
           type: 'ea',
           inputs: mappedInputs,
           indicators: strategy.indicators || [],
-          code: code
+          code: code,
+          restoredStrategy: {
+            id: strategy.id,
+            type: normalizeImportedType(strategy.type),
+            parameters: strategy.parameters || {},
+            indicators: strategy.indicators || [],
+            metrics: strategy.metrics || undefined,
+            status: strategy.status || undefined,
+            createdAt: strategy.createdAt || undefined,
+          }
         });
 
         setPythonCode(pythonCode);
         setStrategyName(strategy.name);
-        setStrategyType(strategy.type as any);
+        setStrategyType(normalizeImportedType(strategy.type));
 
         const params: Record<string, string> = {};
         mappedInputs.forEach(input => {
@@ -220,23 +306,31 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
   const handleImport = () => {
     if (!parsedEA) return;
 
-    // Converter parâmetros para números quando possível
+    const normalizedType = normalizeImportedType(strategyType);
+
+    // Converter parâmetros MQL importados para os nomes que o motor realmente usa
     const numericParams: Record<string, number> = {};
     Object.entries(editedParams).forEach(([key, value]) => {
+      const canonicalName = normalizeImportedParamName(key);
       const numValue = parseFloat(value);
-      if (!isNaN(numValue)) {
-        numericParams[key] = numValue;
+      if (canonicalName && !isNaN(numValue)) {
+        numericParams[canonicalName] = numValue;
       }
     });
 
+    const restoredStrategy = parsedEA.restoredStrategy;
+    const restoredMetrics = restoredStrategy?.metrics;
+    const restoredParameters = filterSupportedParameters(normalizedType, (restoredStrategy?.parameters || {}) as Record<string, number>);
+    const supportedNumericParams = filterSupportedParameters(normalizedType, numericParams);
+
     const newStrategy: Strategy = {
-      id: `custom-${Date.now()}`,
+      id: restoredStrategy?.id || `custom-${Date.now()}`,
       name: strategyName || parsedEA.name,
-      type: strategyType,
-      parameters: numericParams,
+      type: normalizedType,
+      parameters: withStrategyDefaults(normalizedType, { ...restoredParameters, ...supportedNumericParams }),
       indicators: parsedEA.indicators,
       pythonCode: pythonCode || undefined,
-      metrics: {
+      metrics: restoredMetrics && Object.keys(restoredMetrics).length > 0 ? restoredMetrics : {
         wfe: 0,
         sharpeIS: 0,
         sharpeOOS: 0,
@@ -250,8 +344,8 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
         calmarRatio: 0,
         sortinoRatio: 0
       },
-      status: 'testing',
-      createdAt: Date.now()
+      status: restoredStrategy?.status || 'testing',
+      createdAt: restoredStrategy?.createdAt || Date.now()
     };
 
     onImport(newStrategy);
@@ -377,6 +471,31 @@ export function EAImporter({ open, onOpenChange, onImport }: EAImporterProps) {
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-4">
+                    {/* Tipo de estratégia */}
+                    <div className="space-y-2">
+                      <Label className="text-slate-400">Tipo de Estratégia:</Label>
+                      <div className="flex gap-2">
+                        {(['trend', 'reversal', 'breakout', 'scalping', 'mean_reversion'] as const).map(type => (
+                          <Button
+                            key={type}
+                            variant={strategyType === type ? 'default' : 'outline'}
+                            size="sm"
+                            onClick={() => setStrategyType(type)}
+                            className={cn(
+                              strategyType === type
+                                ? 'bg-blue-600'
+                                : 'border-slate-600 text-slate-400'
+                            )}
+                          >
+                            {type === 'trend' && 'Tendência'}
+                            {type === 'reversal' && 'Reversão'}
+                            {type === 'breakout' && 'Breakout'}
+                            {type === 'scalping' && 'Scalping'}
+                            {type === 'mean_reversion' && 'Mean Reversion'}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
 
                     {/* Indicadores detectados */}
                     <div className="space-y-2">

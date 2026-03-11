@@ -19,7 +19,8 @@ const typeLabels: Record<string, string> = {
   reversal: 'Reversão',
   breakout: 'Breakout',
   scalping: 'Scalping',
-  mean_reversion: 'Mean Reversion'
+  mean_reversion: 'Mean Reversion',
+  donchian: 'Donchian'
 };
 
 const typeColors: Record<string, string> = {
@@ -27,7 +28,8 @@ const typeColors: Record<string, string> = {
   reversal: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
   breakout: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
   scalping: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
-  mean_reversion: 'bg-pink-500/20 text-pink-400 border-pink-500/30'
+  mean_reversion: 'bg-pink-500/20 text-pink-400 border-pink-500/30',
+  donchian: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30'
 };
 
 const statusColors: Record<string, string> = {

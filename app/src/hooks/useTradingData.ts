@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Symbol, Timeframe, OHLCV, Pattern, MarketRegime, Strategy } from '@/types/trading';
+import type { Symbol, Timeframe, OHLCV, Pattern, MarketRegime, Strategy, IndicatorScorecardItem, TradePlaybook, ActiveWindow, MicrostructureInsight, EntryTimingInsight } from '@/types/trading';
 
 const TIMEFRAMES: Timeframe[] = [
   { value: 'M1', label: 'M1', minutes: 1 },
@@ -11,7 +11,7 @@ const TIMEFRAMES: Timeframe[] = [
   { value: 'D1', label: 'D1', minutes: 1440 },
 ];
 
-const API_BASE_URL = '/api';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 
 async function safeFetch<T>(url: string, fallback: T): Promise<T> {
   try {
@@ -38,8 +38,12 @@ export function useTradingData() {
     features: { feature: string; importance: number; description: string }[];
     successProbability: number;
     explanation: string;
+    scorecard: IndicatorScorecardItem[];
+    playbooks: TradePlaybook[];
+    activeWindows: ActiveWindow[];
+    microstructure: MicrostructureInsight;
+    entryTiming: EntryTimingInsight;
   } | null>(null);
-  const [selectedPeriod, setSelectedPeriod] = useState<string>('6M');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,8 +51,8 @@ export function useTradingData() {
     const data = await safeFetch<{ name: string }[]>(`${API_BASE_URL}/symbols`, []);
     const syms = data.map(s => ({ name: s.name } as Symbol));
     setSymbols(syms);
-    if (syms.length > 0 && !selectedSymbol.name) setSelectedSymbol(syms[0]);
-  }, [selectedSymbol.name]);
+    if (syms.length > 0) setSelectedSymbol(syms[0]);
+  }, []);
 
   const fetchData = useCallback(async () => {
     if (!selectedSymbol?.name) return;
@@ -58,20 +62,19 @@ export function useTradingData() {
     try {
       const sym = selectedSymbol.name;
       const tf = selectedTimeframe.value;
-      const period = selectedPeriod;
 
       // Fetch all data in parallel — each request is independent and won't crash if one fails
       const [ohlcv, analysis, strats, hm, ml] = await Promise.all([
-        safeFetch<OHLCV[]>(`${API_BASE_URL}/ohlcv?symbol=${sym}&timeframe=${tf}&period=${period}`, []),
+        safeFetch<OHLCV[]>(`${API_BASE_URL}/ohlcv?symbol=${sym}&timeframe=${tf}`, []),
         safeFetch<{ regime: MarketRegime | null; patterns: Pattern[]; recommendation: any }>(
-          `${API_BASE_URL}/analysis?symbol=${sym}&timeframe=${tf}&period=${period}`,
+          `${API_BASE_URL}/analysis?symbol=${sym}&timeframe=${tf}`,
           { regime: null, patterns: [], recommendation: null }
         ),
-        safeFetch<Strategy[]>(`${API_BASE_URL}/strategies?symbol=${sym}&timeframe=${tf}&period=${period}`, []),
-        safeFetch<number[][]>(`${API_BASE_URL}/heatmap?symbol=${sym}&timeframe=${tf}&period=${period}`, []),
-        safeFetch<{ features: any[]; successProbability: number; explanation: string }>(
-          `${API_BASE_URL}/ml-insights?symbol=${sym}&timeframe=${tf}&period=${period}`,
-          { features: [], successProbability: 0, explanation: 'Sem dados disponíveis.' }
+        safeFetch<Strategy[]>(`${API_BASE_URL}/strategies?symbol=${sym}&timeframe=${tf}`, []),
+        safeFetch<number[][]>(`${API_BASE_URL}/heatmap?symbol=${sym}&timeframe=${tf}`, []),
+        safeFetch<{ features: any[]; successProbability: number; explanation: string; scorecard: IndicatorScorecardItem[]; playbooks: TradePlaybook[]; activeWindows: ActiveWindow[]; microstructure: MicrostructureInsight; entryTiming: EntryTimingInsight }>(
+          `${API_BASE_URL}/ml-insights?symbol=${sym}&timeframe=${tf}`,
+          { features: [], successProbability: 0, explanation: 'Sem dados disponíveis.', scorecard: [], playbooks: [], activeWindows: [], microstructure: { pressureBias: 'indefinido', uptickRatio: 0, spreadState: 'sem dados', avgSpread: 0, recentSpread: 0, activeBursts: [] }, entryTiming: { bestWindow: null, trigger: 'N/A', executionHint: 'Sem dados suficientes.' } }
         ),
       ]);
 
@@ -91,7 +94,7 @@ export function useTradingData() {
     } finally {
       setLoading(false);
     }
-  }, [selectedSymbol, selectedTimeframe, selectedPeriod]);
+  }, [selectedSymbol, selectedTimeframe]);
 
   useEffect(() => {
     fetchSymbols();
@@ -106,7 +109,6 @@ export function useTradingData() {
     timeframes,
     selectedSymbol,
     selectedTimeframe,
-    selectedPeriod,
     data,
     patterns,
     regime,
@@ -118,7 +120,6 @@ export function useTradingData() {
     error,
     setSelectedSymbol,
     setSelectedTimeframe,
-    setSelectedPeriod,
     refreshData: fetchData,
   };
 }

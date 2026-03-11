@@ -49,7 +49,7 @@ export interface MarketRegime {
 export interface Strategy {
   id: string;
   name: string;
-  type: 'trend' | 'reversal' | 'breakout' | 'scalping' | 'mean_reversion';
+  type: 'trend' | 'reversal' | 'breakout' | 'scalping' | 'mean_reversion' | 'donchian';
   parameters: Record<string, number>;
   indicators: string[];
   metrics: StrategyMetrics;
@@ -191,6 +191,55 @@ export interface FeatureImportance {
   feature: string;
   importance: number;
   description: string;
+}
+
+export interface IndicatorScorecardItem {
+  indicator: string;
+  currentSignal: string;
+  accuracy: number;
+  avgEdge: number;
+  fitScore: number;
+  sampleSize: number;
+  rationale: string;
+}
+
+export interface TradePlaybook {
+  title: string;
+  bias: string;
+  confidence: number;
+  setup: string;
+  entry: string;
+  confirmation: string;
+  invalidation: string;
+  holdingPeriod: string;
+}
+
+export interface ActiveWindow {
+  label: string;
+  bias: string;
+  edge: number;
+  samples: number;
+}
+
+export interface EntryTimingInsight {
+  bestWindow: ActiveWindow | null;
+  trigger: string;
+  executionHint: string;
+}
+
+export interface MicrostructureInsight {
+  pressureBias: string;
+  uptickRatio: number;
+  spreadState: string;
+  avgSpread: number;
+  recentSpread: number;
+  activeBursts: Array<{
+    label: string;
+    bias: string;
+    tickCount: number;
+    avgSpread: number;
+    intensity: number;
+  }>;
 }
 
 export interface StrategyRecommendation {

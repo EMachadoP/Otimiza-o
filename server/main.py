@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sse_starlette.sse import EventSourceResponse
 from contextlib import asynccontextmanager
 from typing import Dict
 import uvicorn
@@ -55,7 +54,7 @@ async def root():
         "endpoints": [
             "/api/status", "/api/symbols", "/api/ohlcv",
             "/api/analysis", "/api/strategies", "/api/backtest",
-            "/api/validate", "/api/heatmap", "/api/ml-insights",
+            "/api/validate", "/api/heatmap", "/api/ml-insights", "/api/indicator-scorecard",
         ],
     }
 
@@ -84,50 +83,33 @@ async def get_symbols():
     return [{"name": s} for s in sorted_symbols[:100]]
 
 
-def get_count_from_period(period: str, timeframe: str) -> int:
-    """Calculate needed candles for a given period and timeframe."""
-    # Mercado tradicional = ~22 dias úteis por mês
-    period_map = {'1M': 22, '3M': 65, '6M': 130, '1Y': 260, '2Y': 520}
-    days = period_map.get(period or '6M', 130)
-    
-    if timeframe.startswith('M'):
-        mins = int(timeframe[1:])
-        return min(50000, (days * 24 * 60) // mins)
-    elif timeframe.startswith('H'):
-        hours = int(timeframe[1:])
-        return min(15000, (days * 24) // hours)
-    elif timeframe == 'D1':
-        return days
-    return 1000
-
 @app.get("/api/ohlcv")
-async def get_ohlcv(symbol: str, timeframe: str, period: str = None, count: int = None):
-    if not count:
-        count = get_count_from_period(period, timeframe)
+async def get_ohlcv(symbol: str, timeframe: str, count: int = 500):
     df = mt5_bridge.get_ohlcv(symbol, timeframe, count=count)
     if df is None or df.empty:
-        return []
+        return [] # Return empty list instead of 500 to keep frontend alive
     data = df.copy()
     data['time'] = data['time'].astype(int) // 10**6
     return data.to_dict(orient='records')
 
 
 @app.get("/api/analysis")
-async def get_analysis(symbol: str, timeframe: str, period: str = None):
-    count = get_count_from_period(period, timeframe)
-    # Use at least 200 for analysis
-    count = max(count, 200)
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=count)
+async def get_analysis(symbol: str, timeframe: str):
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=200)
     if df is None or df.empty:
         return {
-            "regime": {"type": "undefined", "confidence": 0, "indicators": {}}, 
+            "regime": {"type": "undefined", "confidence": 0, "indicators": {}},
             "patterns": [],
-            "recommendation": {"strategy": "N/A", "reason": "Sem dados", "confidence": 0}
+            "recommendation": {"strategy": "N/A", "reason": "Sem dados", "confidence": 0},
+            "microstructure": {"pressureBias": "indefinido", "uptickRatio": 0, "spreadState": "sem dados", "avgSpread": 0, "recentSpread": 0, "activeBursts": []},
         }
     regime = ml_models.detect_regime(df)
     patterns = ml_models.detect_patterns(df)
+    ticks = mt5_bridge.get_ticks(symbol, n_ticks=12000)
+    microstructure = ml_models.analyze_microstructure(ticks)
     recommendation = ml_models.get_recommendation(regime.get("type", "undefined"))
-    return {"regime": regime, "patterns": patterns, "recommendation": recommendation}
+    recommendation["microstructureBias"] = microstructure.get("pressureBias", "indefinido")
+    return {"regime": regime, "patterns": patterns, "recommendation": recommendation, "microstructure": microstructure}
 
 
 # ──────────────────────────────────────────
@@ -139,53 +121,53 @@ async def get_strategies(symbol: str, timeframe: str):
     df = mt5_bridge.get_ohlcv(symbol, timeframe, count=1000)
     if df is None or df.empty:
         return []
-    strategies = backtest_engine.discover_strategies(df, symbol_name=symbol)
+    ticks = mt5_bridge.get_ticks(symbol, n_ticks=20000)
+    microstructure = ml_models.analyze_microstructure(ticks)
+    strategies = backtest_engine.discover_strategies(df, symbol_name=symbol, microstructure=microstructure)
     return strategies
 
 
-# ──────────────────────────────────────────
-# NEW: Full Validation (WFA + CPCV + MC)
-# ──────────────────────────────────────────
 @app.post("/api/validate")
 async def run_validation(payload: Dict):
     """Run WFA, CPCV, and Monte Carlo on a strategy."""
-    try:
-        symbol = payload.get("symbol", "EURUSD")
-        timeframe = payload.get("timeframe", "H1")
-        strategy_type = payload.get("type", "trend")
-        params = payload.get("parameters", {})
+    symbol = payload.get("symbol", "EURUSD")
+    timeframe = payload.get("timeframe", "H1")
+    strategy_type = payload.get("type", "trend")
+    params = payload.get("parameters", {})
 
-        df = mt5_bridge.get_ohlcv(symbol, timeframe, count=2000)
-        if df is None or df.empty:
-            raise HTTPException(status_code=400, detail="Sem dados disponíveis no MT5")
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=2000)
+    if df is None:
+        raise HTTPException(status_code=500, detail="Failed to fetch data")
 
-        wfa = backtest_engine.run_wfa(df, strategy_type, params, symbol_name=symbol)
-        cpcv = backtest_engine.run_cpcv(df, strategy_type, params, symbol_name=symbol)
-        mc = backtest_engine.run_monte_carlo(df, strategy_type, params, symbol_name=symbol, n_simulations=5000)
+    wfa = backtest_engine.run_wfa(df, strategy_type, params, symbol_name=symbol)
+    cpcv = backtest_engine.run_cpcv(df, strategy_type, params, symbol_name=symbol)
+    mc = backtest_engine.run_monte_carlo(df, strategy_type, params, symbol_name=symbol, n_simulations=5000)
+    ticks = mt5_bridge.get_ticks(symbol, n_ticks=20000)
+    microstructure = ml_models.analyze_microstructure(ticks)
 
-        # PBO approximation from CPCV sharpe variance
-        avg_sharpe = cpcv.get('avgSharpe', 0)
-        sharpe_std = cpcv.get('sharpeStd', 0)
-        pbo = min(float(sharpe_std / (abs(avg_sharpe) + 1e-10) * 100), 100)
+    # PBO approximation from CPCV sharpe variance
+    pbo = min(float(cpcv['sharpeStd'] / (abs(cpcv['avgSharpe']) + 1e-10) * 100), 100)
+    micro_adj = backtest_engine._microstructure_validation_adjustment(microstructure, strategy_type)
+    status = backtest_engine._classify_strategy_status(
+        wfa,
+        cpcv,
+        mc,
+        pbo,
+        strategy_type=strategy_type,
+        market_context=microstructure,
+    )
 
-        return {
-            "wfa": wfa,
-            "cpcv": cpcv,
-            "monteCarlo": mc,
-            "pbo": round(pbo, 1),
-        }
-    except Exception as e:
-        logger.error(f"Erro na validação: {e}", exc_info=True)
-        return {
-            "error": str(e),
-            "status": "failed",
-            "message": "Falha no processamento da estratégia. Verifique os parâmetros."
-        }
+    return {
+        "wfa": wfa,
+        "cpcv": cpcv,
+        "monteCarlo": mc,
+        "pbo": round(pbo, 1),
+        "status": status,
+        "microstructure": microstructure,
+        "microstructureAdjustment": micro_adj,
+    }
 
 
-# ──────────────────────────────────────────
-# NEW: Backtest with full validation
-# ──────────────────────────────────────────
 @app.post("/api/backtest")
 async def run_backtest(payload: Dict):
     """Run a full backtest with equity curve."""
@@ -197,12 +179,20 @@ async def run_backtest(payload: Dict):
     df = mt5_bridge.get_ohlcv(symbol, timeframe, 1000)
     if df is None or df.empty:
         return {"equity": [], "metrics": {}, "trades": []}
-    return backtest_engine.run_backtest(df, strategy_type, params, symbol_name=symbol)
 
+    ticks = mt5_bridge.get_ticks(symbol, n_ticks=20000)
+    microstructure = ml_models.analyze_microstructure(ticks)
+    result = backtest_engine.run_backtest(
+        df,
+        strategy_type,
+        params,
+        symbol_name=symbol,
+        market_context=microstructure,
+    )
+    if isinstance(result, dict):
+        result["microstructure"] = microstructure
+    return result
 
-# ──────────────────────────────────────────
-# NEW: Recurrence Heatmap (real data)
-# ──────────────────────────────────────────
 @app.get("/api/heatmap")
 async def get_heatmap(symbol: str, timeframe: str):
     """Compute win rate heatmap by hour/day from real MT5 data."""
@@ -215,62 +205,48 @@ async def get_heatmap(symbol: str, timeframe: str):
 # ──────────────────────────────────────────
 # NEW: ML Feature Importance (real data)
 # ──────────────────────────────────────────
-@app.get("/api/ml-insights")
-async def get_ml_insights(symbol: str, timeframe: str):
-    """Compute ML feature importance using 130+ technical indicators."""
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, 500)
+@app.get("/api/indicator-scorecard")
+async def get_indicator_scorecard(symbol: str, timeframe: str):
+    """Rank main indicators by historical edge for the selected market context."""
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, 700)
     if df is None or df.empty:
-        return {"features": [], "successProbability": 0, "explanation": "Dados insuficientes."}
-    
-    # 1. Compute all features
-    df_feat = feature_engineer.compute_all_features(df)
-    
-    # 2. Detect regime and select features
-    df_regime = feature_engineer.detect_regime_hmm(df_feat)
-    top_features = feature_engineer.select_features(df_regime, n_features=10)
-    
-    # 3. Format response - ENSURE future_return exists
-    if 'future_return' not in df_regime.columns:
-        df_regime['future_return'] = df_regime['close'].pct_change().shift(-1)
-        
-    valid_top_features = [f for f in top_features if f in df_regime.columns]
-    if not valid_top_features:
-        return {"features": [], "successProbability": 50, "explanation": "Não foi possível extrair features relevantes."}
-        
-    corrs = df_regime[valid_top_features + ['future_return']].corr()['future_return'].abs().drop('future_return', errors='ignore')
-    total_corr = corrs.sum()
-    
-    features_list = []
-    for feat in valid_top_features:
-        features_list.append({
-            "feature": feat.upper().replace('_', ' '),
-            "importance": round(float(corrs[feat] / (total_corr + 1e-10) * 100), 1),
-            "description": f"Indicador técnico avançado: {feat}"
-        })
-    
-    # Sort by importance
-    features_list.sort(key=lambda x: x['importance'], reverse=True)
-    
-    # Probability based on recent return consistency
-    recent_rets = df_regime['future_return'].tail(20).dropna()
-    prob = round(float((recent_rets > 0).mean() * 100), 1) if not recent_rets.empty else 50
-    
-    regime_type = "alta" if df_regime['return_1d'].tail(5).mean() > 0 else "baixa"
-    explanation = (
-        f"Análise de 130+ indicadores concluída. O mercado apresenta viés de {regime_type}. "
-        f"As features mais preditivas no momento são {', '.join(valid_top_features[:2])}."
-    )
-    
+        return {"scorecard": [], "explanation": "Dados insuficientes."}
+    scorecard = ml_models.evaluate_indicator_scorecard(df)
+    top = scorecard[0]['indicator'] if scorecard else "Nenhum indicador"
     return {
-        "features": features_list,
-        "successProbability": min(max(prob, 30), 95),
-        "explanation": explanation
+        "scorecard": scorecard,
+        "explanation": f"Ranking construido com base na aderencia historica dos indicadores em {symbol} {timeframe}. Top atual: {top}."
     }
 
 
-# ──────────────────────────────────────────
-# NEW: Real Parameter Optimization
-# ──────────────────────────────────────────
+@app.get("/api/ml-insights")
+async def get_ml_insights(symbol: str, timeframe: str):
+    """Generate ML-driven guidance, feature importance, indicator scorecard, playbooks, and microstructure."""
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, 700)
+    if df is None or df.empty:
+        return {
+            "features": [],
+            "successProbability": 0,
+            "explanation": "Dados insuficientes.",
+            "scorecard": [],
+            "playbooks": [],
+            "activeWindows": [],
+            "entryTiming": {"bestWindow": None, "trigger": "N/A", "executionHint": "Sem dados suficientes."},
+            "microstructure": {
+                "pressureBias": "indefinido",
+                "uptickRatio": 0,
+                "spreadState": "sem dados",
+                "avgSpread": 0,
+                "recentSpread": 0,
+                "activeBursts": [],
+            },
+        }
+    ticks = mt5_bridge.get_ticks(symbol, n_ticks=20000)
+    microstructure = ml_models.analyze_microstructure(ticks)
+    insights = ml_models.build_ml_insights(df, microstructure=microstructure)
+    return insights
+
+
 @app.post("/api/optimize")
 async def optimize(payload: Dict):
     """Run strategy optimization with high performance funnel."""
@@ -279,14 +255,11 @@ async def optimize(payload: Dict):
     strategy_type = payload.get("type", "trend")
     param_ranges = payload.get("paramRanges", {})
     criteria = payload.get("criteria", "sharpe")
-    period = payload.get("period", "6M")
     
-    count = get_count_from_period(period, timeframe)
-    
-    logger.info(f"Otimizador: Recebida requisição para {strategy_type} em {symbol} (period={period}, count={count})")
+    logger.info(f"Otimizador: Recebida requisição para {strategy_type} em {symbol}")
     
     # 1. Get Data
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=count)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=1000)
     if df is None or df.empty:
         raise HTTPException(status_code=400, detail="Sem dados disponíveis no MT5")
         
@@ -306,52 +279,6 @@ async def optimize(payload: Dict):
     except Exception as e:
         logger.error(f"Erro na otimização: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/optimize-stream")
-async def optimize_stream(payload: Dict):
-    """Run strategy optimization with real-time SSE progress updates."""
-    symbol = payload.get("symbol", "EURUSD")
-    timeframe = payload.get("timeframe", "H1")
-    strategy_type = payload.get("type", "trend")
-    param_ranges = payload.get("paramRanges", {})
-    criteria = payload.get("criteria", "sharpe")
-    period = payload.get("period", "6M")
-    
-    count = get_count_from_period(period, timeframe)
-    
-    logger.info(f"Otimizador Streaming: Recebida requisição para {strategy_type} em {symbol} (period={period})")
-    
-    # 1. Get Data
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=count)
-    if df is None or df.empty:
-        raise HTTPException(status_code=400, detail="Sem dados disponíveis no MT5")
-        
-    # 2. Add Basic Features (Fast enough to run before stream initiation)
-    df = feature_engineer.compute_all_features(df, blocks=['trend', 'momentum', 'volatility'])
-    
-    # 3. Create Event Generator
-    async def event_generator():
-        try:
-            async for update in optimizer.optimize_stream(
-                df=df,
-                strategy_type=strategy_type,
-                param_ranges=param_ranges,
-                criteria=criteria,
-                symbol_name=symbol
-            ):
-                yield {
-                    "event": "message",
-                    "data": update
-                }
-        except Exception as e:
-            logger.error(f"Erro no stream de otimização: {e}", exc_info=True)
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": str(e)})
-            }
-
-    return EventSourceResponse(event_generator())
 
 
 @app.post("/api/convert-mql")
@@ -429,5 +356,4 @@ async def export_ea(payload: Dict):
 
 
 if __name__ == "__main__":
-    # Enable reload to pick up code changes automatically
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

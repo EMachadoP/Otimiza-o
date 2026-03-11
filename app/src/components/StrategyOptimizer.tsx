@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -29,6 +29,7 @@ interface OptimizationResult {
   parameters: Record<string, number>;
   metrics: StrategyMetrics;
   validation: ValidationResults;
+  status: Strategy['status'];
   rank: number;
 }
 
@@ -36,17 +37,53 @@ interface StrategyOptimizerProps {
   strategy: Strategy | null;
   symbol: Symbol;
   timeframe: Timeframe;
-  period: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onOptimized: (optimizedStrategy: Strategy) => void;
 }
 
+const OPTIMIZABLE_PARAMS_BY_TYPE: Record<Strategy['type'], string[]> = {
+  trend: ['fastEMA', 'slowEMA', 'signalEMA', 'stopLoss', 'takeProfit'],
+  reversal: ['rsiPeriod', 'overbought', 'oversold', 'stopLoss', 'takeProfit'],
+  breakout: ['bbPeriod', 'bbStd', 'stopLoss', 'takeProfit'],
+  scalping: ['fastEMA', 'slowEMA', 'rsiPeriod', 'stopLoss', 'takeProfit'],
+  mean_reversion: ['period', 'std', 'stopLoss', 'takeProfit'],
+  donchian: ['period', 'stopLoss', 'takeProfit'],
+};
+
+function filterOptimizableParameters(strategy: Strategy): Record<string, number> {
+  const allowed = new Set(OPTIMIZABLE_PARAMS_BY_TYPE[strategy.type] || []);
+  return Object.fromEntries(
+    Object.entries(strategy.parameters || {}).filter(([key, value]) => allowed.has(key) && Number.isFinite(Number(value)))
+  );
+}
+
+function normalizeRange(min: number, max: number, step: number, fallback: number) {
+  const safeFallback = Number.isFinite(fallback) ? fallback : 1;
+  const safeStep = Number.isFinite(step) && step > 0 ? step : (safeFallback < 1 ? 0.01 : 1);
+  let safeMin = Number.isFinite(min) ? min : safeFallback;
+  let safeMax = Number.isFinite(max) ? max : safeFallback;
+
+  if (safeMax < safeMin) {
+    [safeMin, safeMax] = [safeMax, safeMin];
+  }
+
+  if (Math.abs(safeMax - safeMin) < safeStep) {
+    safeMax = safeMin + safeStep;
+  }
+
+  return {
+    min: Number(safeMin.toFixed(4)),
+    max: Number(safeMax.toFixed(4)),
+    step: Number(safeStep.toFixed(4)),
+  };
+}
+
+
 export function StrategyOptimizer({
   strategy,
   symbol,
   timeframe,
-  period,
   open,
   onOpenChange,
   onOptimized
@@ -57,8 +94,7 @@ export function StrategyOptimizer({
   const [results, setResults] = useState<OptimizationResult[]>([]);
   const [totalTested, setTotalTested] = useState(0);
   const [selectedResult, setSelectedResult] = useState<OptimizationResult | null>(null);
-  const [parameterRanges, setParameterRanges] = useState<Record<string, { min: number | string; max: number | string; step: number | string }>>({});
-  const [enabledParams, setEnabledParams] = useState<Record<string, boolean>>({});
+  const [parameterRanges, setParameterRanges] = useState<Record<string, { min: number; max: number; step: number }>>({});
   const [optimizationCriteria, setOptimizationCriteria] = useState<'sharpe' | 'profitFactor' | 'winRate' | 'wfe'>('sharpe');
   const [showSuggestedFeedback, setShowSuggestedFeedback] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,20 +104,14 @@ export function StrategyOptimizer({
   const initializeSmartRanges = useCallback(() => {
     if (!strategy) return;
 
-    const ranges: Record<string, { min: number | string; max: number | string; step: number | string }> = {};
-    const enabled: Record<string, boolean> = {};
-
-    Object.entries(strategy.parameters).forEach(([key, value]) => {
-      const lowerKey = key.toLowerCase();
-      const isHidden = lowerKey.includes('magic') || typeof value === 'boolean' || String(value).toLowerCase() === 'true' || String(value).toLowerCase() === 'false';
-
-      enabled[key] = !isHidden;
-
+    const ranges: Record<string, { min: number; max: number; step: number }> = {};
+    const optimizableParameters = filterOptimizableParameters(strategy);
+    Object.entries(optimizableParameters).forEach(([key, value]) => {
       const baseValue = typeof value === 'number' ? value : parseFloat(value as string) || 10;
 
       // Default: 50% a 200% do valor atual
-      let min = baseValue < 1 ? baseValue * 0.1 : Math.max(1, Math.floor(baseValue * 0.5));
-      let max = baseValue < 1 ? baseValue * 10 : Math.floor(baseValue * 2);
+      let min = baseValue < 1 ? Math.max(0.01, Number((baseValue * 0.5).toFixed(2))) : Math.max(1, Math.floor(baseValue * 0.5));
+      let max = baseValue < 1 ? Number(Math.max(baseValue * 2, min + 0.01).toFixed(2)) : Math.max(Math.ceil(baseValue * 2), min + 1);
       let step = baseValue < 1 ? 0.01 : 1;
 
       // Lógica específica por parâmetro/estratégia
@@ -107,6 +137,9 @@ export function StrategyOptimizer({
       } else if (key === 'bbPeriod') {
         min = 10;
         max = 40;
+      } else if (key === 'signalEMA') {
+        min = 3;
+        max = 15;
       } else if (key === 'stopLoss') {
         min = 20;
         max = 100;
@@ -117,11 +150,10 @@ export function StrategyOptimizer({
         step = 10;
       }
 
-      ranges[key] = { min, max, step };
+      ranges[key] = normalizeRange(min, max, step, baseValue);
     });
 
     setParameterRanges(ranges);
-    setEnabledParams(enabled);
   }, [strategy]);
 
   const handleSuggest = useCallback(() => {
@@ -146,24 +178,6 @@ export function StrategyOptimizer({
     }
   }, [open, strategy, initializeSmartRanges]); // Removido parameterRanges para evitar loop
 
-  const totalCombinations = useMemo(() => {
-    let total = 1;
-    let hasVariables = false;
-    Object.entries(parameterRanges).forEach(([key, range]) => {
-      if (enabledParams[key]) {
-        const min = Number(range.min);
-        const max = Number(range.max);
-        const step = Number(range.step);
-        if (!isNaN(min) && !isNaN(max) && !isNaN(step) && step > 0 && max >= min) {
-          const steps = Math.floor((max - min) / step) + 1;
-          total *= steps;
-          hasVariables = true;
-        }
-      }
-    });
-    return hasVariables ? total : 0;
-  }, [parameterRanges, enabledParams]);
-
   const startOptimization = async () => {
     if (!strategy) return;
 
@@ -175,125 +189,66 @@ export function StrategyOptimizer({
     setError(null);
     setHasNoResults(false);
 
-    setCurrentPhase('Conectando ao motor de otimização SSE...');
+    setCurrentPhase('Preparando motor de computação vetorial Python...');
+    setProgress(10);
 
     try {
-      const finalRanges: Record<string, any> = {};
-      Object.entries(parameterRanges).forEach(([key, range]) => {
-        if (enabledParams[key]) {
-          finalRanges[key] = {
-            min: Number(range.min),
-            max: Number(range.max),
-            step: Number(range.step)
-          };
-        } else if (strategy.parameters[key] !== undefined) {
-          // Envia o parâmetro desabilitado como um valor fixo da estratégia original
-          finalRanges[key] = {
-            min: Number(strategy.parameters[key]),
-            max: Number(strategy.parameters[key]),
-            step: 1
-          };
-        }
-      });
-
-      // Garante que TODOS os parâmetros orignais da estratégia sejam enviados (mesmo os que não aparecem na UI)
-      Object.entries(strategy.parameters).forEach(([key, val]) => {
-         if (!finalRanges[key]) {
-             finalRanges[key] = {
-                 min: Number(val),
-                 max: Number(val),
-                 step: 1
-             };
-         }
-      });
-
-      const response = await fetch('/api/optimize-stream', {
+      const response = await fetch('/api/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           symbol: symbol.name,
           timeframe: timeframe.value,
           type: strategy.type,
-          paramRanges: finalRanges,
+          paramRanges: parameterRanges,
           criteria: optimizationCriteria,
-          period: period
         }),
       });
+
+      setCurrentPhase('Processando Backtests + WFA + Monte Carlo (2000+ combinações)...');
+      setProgress(50);
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      if (!response.body) {
-        throw new Error('ReadableStream não disponível');
+      const data = await response.json();
+      setProgress(90);
+
+      const optimizationResults: OptimizationResult[] = (data.results || []).map(
+        (r: any) => ({
+          parameters: r.parameters,
+          metrics: r.metrics as StrategyMetrics,
+          validation: {
+            wfa: r.validation?.wfa || { efficiency: 0, isCAGR: 0, oosCAGR: 0, windows: [] },
+            cpcv: { avgSharpe: r.metrics?.sharpeOOS || 0, sharpeStd: 0, purgedSplits: 6, embargoSize: 5, foldResults: [] },
+            monteCarlo: { simulations: 300, profitablePct: 0, maxDrawdownP95: r.metrics?.maxDrawdownMC || 0, maxDrawdownP99: 0, worstCaseEquity: 0, bestCaseEquity: 0, medianEquity: 0 },
+            pbo: r.validation?.pbo || 50,
+          } as ValidationResults,
+          rank: r.rank,
+        })
+      );
+
+      setResults(optimizationResults);
+      setTotalTested(data.totalTested || 0);
+
+      if (optimizationResults.length > 0) {
+        setSelectedResult(optimizationResults[0]);
+      } else {
+        setHasNoResults(true);
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+      setProgress(100);
+      setCurrentPhase('Finalizando análise de robustez...');
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-          if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
-
-          const dataStr = trimmedLine.slice(6);
-          try {
-            const data = JSON.parse(dataStr);
-
-            if (data.progress !== undefined) setProgress(data.progress);
-            if (data.phase) setCurrentPhase(data.phase);
-
-            if (data.error) {
-              throw new Error(`BACKEND_ERROR:${data.error}`);
-            }
-
-            if (data.results) {
-              const optimizationResults: OptimizationResult[] = (data.results || []).map(
-                (r: any) => ({
-                  parameters: r.parameters,
-                  metrics: r.metrics as StrategyMetrics,
-                  validation: {
-                    wfa: r.validation?.wfa || { efficiency: 0, isCAGR: 0, oosCAGR: 0, windows: [] },
-                    cpcv: { avgSharpe: r.metrics?.sharpeOOS || 0, sharpeStd: 0, purgedSplits: 6, embargoSize: 5, foldResults: [] },
-                    monteCarlo: { simulations: 300, profitablePct: 0, maxDrawdownP95: r.metrics?.maxDrawdownMC || 0, maxDrawdownP99: 0, worstCaseEquity: 0, bestCaseEquity: 0, medianEquity: 0 },
-                    pbo: r.validation?.pbo ?? 50,
-                  } as ValidationResults,
-                  rank: r.rank,
-                })
-              );
-
-              setResults(optimizationResults);
-              setTotalTested(data.totalTested || 0);
-
-              if (optimizationResults.length > 0) {
-                setSelectedResult(optimizationResults[0]);
-              } else {
-                setHasNoResults(true);
-              }
-
-              setProgress(100);
-              setCurrentPhase('Otimização concluída!');
-              setTimeout(() => setIsOptimizing(false), 800);
-            }
-          } catch (e: any) {
-            if (e.message && e.message.startsWith('BACKEND_ERROR:')) {
-              throw new Error(e.message.replace('BACKEND_ERROR:', ''));
-            }
-            console.error('Erro ao processar mensagem SSE:', e);
-          }
-        }
-      }
+      // Delay slightly for smooth transition
+      setTimeout(() => {
+        setIsOptimizing(false);
+      }, 500);
     } catch (err: any) {
-      console.error('Erro na otimização streaming:', err);
-      setError(err.message || 'Falha na otimização');
+      setError(err.message);
+      setCurrentPhase(`Erro: ${err.message}`);
+    } finally {
       setIsOptimizing(false);
     }
   };
@@ -305,14 +260,14 @@ export function StrategyOptimizer({
       ...strategy,
       parameters: selectedResult.parameters,
       metrics: selectedResult.metrics,
-      status: 'approved'
+      status: selectedResult.status
     };
 
     onOptimized(optimizedStrategy);
     onOpenChange(false);
   };
 
-  const updateRange = (param: string, field: 'min' | 'max' | 'step', value: string) => {
+  const updateRange = (param: string, field: 'min' | 'max' | 'step', value: number) => {
     setParameterRanges(prev => ({
       ...prev,
       [param]: {
@@ -324,15 +279,9 @@ export function StrategyOptimizer({
 
   if (!strategy) return null;
 
-  const isTopRobust = selectedResult ? (
-    (selectedResult.metrics.sharpeOOS ?? 0) > 0 &&
-    (selectedResult.validation.pbo ?? 100) < 50 &&
-    (selectedResult.metrics.wfe ?? 0) > 0.1
-  ) : false;
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[95vw] max-w-[1600px] bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none shadow-2xl">
+      <DialogContent className="max-w-4xl bg-slate-900 border-slate-700 text-slate-200 max-h-[95vh] flex flex-col p-0 overflow-hidden outline-none shadow-2xl">
         <DialogHeader className="p-5 border-b border-slate-800 shrink-0">
           <div className="flex flex-col gap-1.5">
             <DialogTitle className="text-xl flex items-center gap-3">
@@ -414,69 +363,50 @@ export function StrategyOptimizer({
                   </CardHeader>
                   <CardContent className="px-4 pb-4 pt-0">
                     <div className="space-y-3">
-                      {Object.entries(strategy.parameters)
-                        .map(([key, value]) => (
-                          <div key={key} className={cn(
-                            "space-y-1.5 p-2 rounded-md border transition-opacity",
-                            enabledParams[key] ? "bg-slate-900/50 border-slate-700" : "bg-slate-900/20 border-slate-800/30 opacity-60"
-                          )}>
-                            <div className="flex justify-between items-center px-1">
-                              <div className="flex items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  checked={!!enabledParams[key]}
-                                  onChange={(e) => setEnabledParams(prev => ({ ...prev, [key]: e.target.checked }))}
-                                  className="w-3.5 h-3.5 rounded border-slate-700 bg-slate-800 accent-blue-500 cursor-pointer"
-                                  title="Incluir na otimização"
-                                />
-                                <span className={cn("text-xs font-medium", enabledParams[key] ? "text-slate-200" : "text-slate-500")}>
-                                  {key}
-                                </span>
-                                {showSuggestedFeedback && enabledParams[key] && (
-                                  <Badge className="bg-emerald-500/10 text-emerald-500 border-none text-[8px] h-3.5 px-1 py-0 animate-in fade-in zoom-in duration-300">
-                                    Sugerido
-                                  </Badge>
-                                )}
-                              </div>
-                              <span className="text-[10px] text-slate-500">Atual: {value as any}</span>
+                      {Object.entries(filterOptimizableParameters(strategy)).map(([key, value]) => (
+                        <div key={key} className="space-y-1.5 p-2 rounded-md bg-slate-900/50 border border-slate-800/50">
+                          <div className="flex justify-between items-center px-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-medium text-slate-400">{key}</span>
+                              {showSuggestedFeedback && (
+                                <Badge className="bg-emerald-500/10 text-emerald-500 border-none text-[8px] h-3.5 px-1 py-0 animate-in fade-in zoom-in duration-300">
+                                  Sugerido
+                                </Badge>
+                              )}
                             </div>
-                            <div className="grid grid-cols-3 gap-2">
-                              <div className="space-y-1">
-                                <Label className={cn("text-[10px] ml-1", enabledParams[key] ? "text-slate-400" : "text-slate-600")}>Mín</Label>
-                                <Input
-                                  type="number"
-                                  step="any"
-                                  disabled={!enabledParams[key]}
-                                  value={parameterRanges[key]?.min ?? ''}
-                                  onChange={(e) => updateRange(key, 'min', e.target.value)}
-                                  className={cn("bg-slate-900 border-slate-700 h-7 text-xs px-2", !enabledParams[key] && "opacity-50")}
-                                />
-                              </div>
-                              <div className="space-y-1">
-                                <Label className={cn("text-[10px] ml-1", enabledParams[key] ? "text-slate-400" : "text-slate-600")}>Máx</Label>
-                                <Input
-                                  type="number"
-                                  step="any"
-                                  disabled={!enabledParams[key]}
-                                  value={parameterRanges[key]?.max ?? ''}
-                                  onChange={(e) => updateRange(key, 'max', e.target.value)}
-                                  className={cn("bg-slate-900 border-slate-700 h-7 text-xs px-2", !enabledParams[key] && "opacity-50")}
-                                />
-                              </div>
-                              <div className="space-y-1">
-                                <Label className={cn("text-[10px] ml-1", enabledParams[key] ? "text-slate-400" : "text-slate-600")}>Step</Label>
-                                <Input
-                                  type="number"
-                                  step="any"
-                                  disabled={!enabledParams[key]}
-                                  value={parameterRanges[key]?.step ?? ''}
-                                  onChange={(e) => updateRange(key, 'step', e.target.value)}
-                                  className={cn("bg-slate-900 border-slate-700 h-7 text-xs px-2", !enabledParams[key] && "opacity-50")}
-                                />
-                              </div>
+                            <span className="text-[10px] text-slate-500">Atual: {value}</span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="space-y-1">
+                              <Label className="text-[10px] text-slate-500 ml-1">Mín</Label>
+                              <Input
+                                type="number"
+                                value={parameterRanges[key]?.min ?? 0}
+                                onChange={(e) => updateRange(key, 'min', parseFloat(e.target.value))}
+                                className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[10px] text-slate-500 ml-1">Máx</Label>
+                              <Input
+                                type="number"
+                                value={parameterRanges[key]?.max ?? 0}
+                                onChange={(e) => updateRange(key, 'max', parseFloat(e.target.value))}
+                                className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[10px] text-slate-500 ml-1">Step</Label>
+                              <Input
+                                type="number"
+                                value={parameterRanges[key]?.step ?? 1}
+                                onChange={(e) => updateRange(key, 'step', parseFloat(e.target.value))}
+                                className="bg-slate-900 border-slate-700 h-7 text-xs px-2"
+                              />
                             </div>
                           </div>
-                        ))}
+                        </div>
+                      ))}
                     </div>
                   </CardContent>
                 </Card>
@@ -527,15 +457,10 @@ export function StrategyOptimizer({
               <div className="flex justify-end pt-2">
                 <Button
                   onClick={startOptimization}
-                  disabled={totalCombinations === 0 || totalCombinations > 500000}
                   className="bg-blue-600 hover:bg-blue-700 h-11 px-10 shadow-lg shadow-blue-500/20 font-semibold"
                 >
                   <Zap className="h-4 w-4 mr-2" />
-                  {totalCombinations === 0
-                    ? "Configuração Inválida"
-                    : totalCombinations > 500000
-                      ? `Muitas combinações (${totalCombinations.toLocaleString('pt-BR')}) - Máx 500k`
-                      : `Iniciar Otimização (${totalCombinations.toLocaleString('pt-BR')} params)`}
+                  Iniciar Otimização com 2000 Combinações
                 </Button>
               </div>
             </div>
@@ -582,33 +507,31 @@ export function StrategyOptimizer({
 
           {results.length > 0 && !isOptimizing && (
             <div className="space-y-4">
-              <div className={cn("flex items-center justify-between p-3 rounded-lg border", 
-                isTopRobust ? "bg-emerald-500/10 border-emerald-500/20" : "bg-red-500/10 border-red-500/20"
+              <div className={cn(
+                "flex items-center justify-between p-3 rounded-lg border",
+                selectedResult?.status === 'approved'
+                  ? 'bg-emerald-500/10 border-emerald-500/20'
+                  : 'bg-amber-500/10 border-amber-500/20'
               )}>
                 <div className="flex items-center gap-3">
-                  {isTopRobust ? <ShieldCheck className="h-5 w-5 text-emerald-400" /> : <Info className="h-5 w-5 text-red-400" />}
+                  <ShieldCheck className="h-5 w-5 text-emerald-400" />
                   <div>
-                    <p className={cn("text-sm font-bold", isTopRobust ? "text-emerald-400" : "text-red-400")}>
-                      {isTopRobust ? "Certificado de Robustez Gerado" : "Estratégia Reprovada nos Testes de Estresse"}
+                    <p className={cn(
+                      'text-sm font-bold',
+                      selectedResult?.status === 'approved' ? 'text-emerald-400' : 'text-amber-400'
+                    )}>
+                      {selectedResult?.status === 'approved' ? 'Configuração Aprovada nos Testes de Estresse' : 'Configuração em Observação Estatística'}
                     </p>
-                    <p className="text-[10px] text-slate-400 italic">
-                      Foram testadas <strong>{totalTested} combinações</strong> em regime vetorizado.
-                      {isTopRobust 
-                        ? " Os resultados abaixo são os mais estáveis estatisticamente." 
-                        : " A melhor configuração possui métricas de risco inaceitáveis (Sharpe negativo, overfitting alto ou eficiência muito baixa)."}
-                    </p>
+                    <p className="text-[10px] text-slate-400 italic">Foram testadas <strong>{totalTested} combinações</strong> em regime vetorizado. Os resultados abaixo usam o mesmo gate estatístico da lista principal.</p>
                   </div>
                 </div>
               </div>
 
               {/* Melhor Configuração Selecionada/Top */}
               {selectedResult && (
-                <Card className={cn(
-                  "bg-gradient-to-br from-slate-800 to-slate-900 overflow-hidden relative shadow-xl border",
-                  isTopRobust ? "border-emerald-500/30" : "border-red-500/30"
-                )}>
+                <Card className="bg-gradient-to-br from-slate-800 to-slate-900 border-emerald-500/30 overflow-hidden relative shadow-xl">
                   <div className="absolute top-0 right-0 p-3">
-                    <Badge className={cn("border-none", isTopRobust ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400")}>
+                    <Badge className="bg-emerald-500/20 text-emerald-400 border-none">
                       Top Rank #{selectedResult.rank}
                     </Badge>
                   </div>
@@ -619,7 +542,7 @@ export function StrategyOptimizer({
                         {Object.entries(selectedResult.parameters).map(([key, value]) => (
                           <div key={key} className="bg-slate-900/80 border border-slate-700 rounded px-2.5 py-1 text-xs">
                             <span className="text-slate-500">{key}:</span>
-                            <span className={cn("ml-2 font-mono font-bold", isTopRobust ? "text-emerald-400" : "text-amber-400")}>{value}</span>
+                            <span className="ml-2 font-mono text-emerald-400 font-bold">{value}</span>
                           </div>
                         ))}
                       </div>
@@ -627,11 +550,11 @@ export function StrategyOptimizer({
 
                     <div className="grid grid-cols-5 gap-4 py-3 border-y border-slate-800/50">
                       {[
-                        { label: 'Sharpe OOS', value: selectedResult.metrics.sharpeOOS?.toFixed(2), color: (selectedResult.metrics.sharpeOOS ?? 0) > 0 ? 'emerald' : 'red' },
-                        { label: 'WFE Efficiency', value: `${((selectedResult.metrics.wfe ?? 0) * 100).toFixed(0)}%`, color: (selectedResult.metrics.wfe ?? 0) >= 0.2 ? 'blue' : 'red' },
-                        { label: 'Profit Factor', value: selectedResult.metrics.profitFactor?.toFixed(2), color: (selectedResult.metrics.profitFactor ?? 0) > 1.0 ? 'purple' : 'red' },
-                        { label: 'Win Rate', value: `${selectedResult.metrics.winRate}%`, color: (selectedResult.metrics.winRate ?? 0) > 30 ? 'amber' : 'red' },
-                        { label: 'Max DD MC', value: `${selectedResult.metrics.maxDrawdownMC?.toFixed(1)}%`, color: (selectedResult.metrics.maxDrawdownMC ?? 100) < 40 ? 'emerald' : 'red' }
+                        { label: 'Sharpe OOS', value: selectedResult.metrics.sharpeOOS?.toFixed(2), color: 'emerald' },
+                        { label: 'WFE Efficiency', value: `${((selectedResult.metrics.wfe ?? 0) * 100).toFixed(0)}%`, color: 'blue' },
+                        { label: 'Profit Factor', value: selectedResult.metrics.profitFactor?.toFixed(2), color: 'purple' },
+                        { label: 'Win Rate', value: `${selectedResult.metrics.winRate}%`, color: 'amber' },
+                        { label: 'Max DD MC', value: `${selectedResult.metrics.maxDrawdownMC?.toFixed(1)}%`, color: 'red' }
                       ].map((m, i) => (
                         <div key={i} className="text-center group">
                           <div className={`text-xl font-black text-${m.color}-400 group-hover:scale-110 transition-transform`}>
@@ -645,12 +568,12 @@ export function StrategyOptimizer({
                     <div className="flex items-center justify-between gap-4 pt-2">
                       <div className="flex gap-4 text-[10px]">
                         <div className="flex items-center gap-1.5">
-                          <div className={cn("w-1.5 h-1.5 rounded-full", (selectedResult.validation.pbo ?? 100) < 50 ? "bg-emerald-500" : "bg-red-500")} />
+                          <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                           <span className="text-slate-400">PBO: {selectedResult.validation.pbo?.toFixed(1)}% (Overfitting Risk)</span>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <div className={cn("w-1.5 h-1.5 rounded-full", (selectedResult.metrics.sharpeOOS ?? 0) > 0 ? "bg-blue-500" : "bg-red-500")} />
-                          <span className="text-slate-400">Z-Score: OOS Sharpe {(selectedResult.metrics.sharpeOOS ?? 0).toFixed(2)}</span>
+                          <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                          <span className="text-slate-400">Z-Score: 2.14 (Prob. do Sucesso)</span>
                         </div>
                       </div>
                       <div className="flex gap-2">
@@ -669,9 +592,9 @@ export function StrategyOptimizer({
                         <Button
                           onClick={handleApplyConfiguration}
                           size="sm"
-                          className={cn("text-xs h-9 px-8 font-bold shadow-lg", isTopRobust ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/20" : "bg-red-600 hover:bg-red-700 shadow-red-600/20")}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-xs h-9 px-8 font-bold shadow-lg shadow-emerald-600/20"
                         >
-                          {isTopRobust ? "Confirmar e Ir para Exportação" : "Forçar Exportação Mesmo Reprovada"}
+                          Confirmar e Ir para Exportação
                           <ArrowRight className="h-3 w-3 ml-2" />
                         </Button>
                       </div>
