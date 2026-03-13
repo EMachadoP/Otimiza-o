@@ -221,10 +221,11 @@ export function StrategyOptimizer({
           metrics: r.metrics as StrategyMetrics,
           validation: {
             wfa: r.validation?.wfa || { efficiency: 0, isCAGR: 0, oosCAGR: 0, windows: [] },
-            cpcv: { avgSharpe: r.metrics?.sharpeOOS || 0, sharpeStd: 0, purgedSplits: 6, embargoSize: 5, foldResults: [] },
-            monteCarlo: { simulations: 300, profitablePct: 0, maxDrawdownP95: r.metrics?.maxDrawdownMC || 0, maxDrawdownP99: 0, worstCaseEquity: 0, bestCaseEquity: 0, medianEquity: 0 },
+            cpcv: r.validation?.cpcv || { avgSharpe: r.metrics?.sharpeOOS || 0, sharpeStd: 0, purgedSplits: 6, embargoSize: 5, foldResults: [] },
+            monteCarlo: r.validation?.monteCarlo || { simulations: 300, profitablePct: 0, maxDrawdownP95: r.metrics?.maxDrawdownMC || 0, maxDrawdownP99: 0, worstCaseEquity: 0, bestCaseEquity: 0, medianEquity: 0 },
             pbo: r.validation?.pbo || 50,
           } as ValidationResults,
+          status: r.status || r.validation?.status || 'testing',
           rank: r.rank,
         })
       );

@@ -79,6 +79,7 @@ class OptimizationResult:
     metrics: Dict[str, Any]
     rank: int = 0
     validation: Optional[Dict] = None
+    status: str = "testing"
 
 
 class ParameterOptimizer:
@@ -195,7 +196,8 @@ class ParameterOptimizer:
                         validation={
                             **(res.get('validation') or {}),
                             'status': res.get('status', 'testing')
-                        }
+                        },
+                        status=res.get('status', 'testing')
                     ))
         
         # Final ranking

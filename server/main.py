@@ -43,6 +43,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+STRATEGY_EVAL_BARS = 1000
+
 
 @app.get("/")
 async def root():
@@ -118,7 +120,7 @@ async def get_analysis(symbol: str, timeframe: str):
 @app.get("/api/strategies")
 async def get_strategies(symbol: str, timeframe: str):
     """Discover and rank strategies using real MT5 data."""
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=1000)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=STRATEGY_EVAL_BARS)
     if df is None or df.empty:
         return []
     ticks = mt5_bridge.get_ticks(symbol, n_ticks=20000)
@@ -135,7 +137,9 @@ async def run_validation(payload: Dict):
     strategy_type = payload.get("type", "trend")
     params = payload.get("parameters", {})
 
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=2000)
+    # Keep validation on the same history window used by discovery/optimization
+    # so "approved" strategies remain comparable during manual rechecks.
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=STRATEGY_EVAL_BARS)
     if df is None:
         raise HTTPException(status_code=500, detail="Failed to fetch data")
 
@@ -196,7 +200,9 @@ async def run_backtest(payload: Dict):
 @app.get("/api/heatmap")
 async def get_heatmap(symbol: str, timeframe: str):
     """Compute win rate heatmap by hour/day from real MT5 data."""
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=2000)
+    # Keep validation on the same history window used by discovery/optimization
+    # so "approved" strategies remain comparable during manual rechecks.
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=STRATEGY_EVAL_BARS)
     if df is None or df.empty:
         return [[0]*24 for _ in range(5)] # 5 days x 24 hours
     return backtest_engine.compute_heatmap(df)
@@ -259,7 +265,7 @@ async def optimize(payload: Dict):
     logger.info(f"Otimizador: Recebida requisição para {strategy_type} em {symbol}")
     
     # 1. Get Data
-    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=1000)
+    df = mt5_bridge.get_ohlcv(symbol, timeframe, count=STRATEGY_EVAL_BARS)
     if df is None or df.empty:
         raise HTTPException(status_code=400, detail="Sem dados disponíveis no MT5")
         

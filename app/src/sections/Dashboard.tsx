@@ -346,8 +346,9 @@ export function Dashboard() {
                   isRunning={running}
                   progress={progress}
                   onRunValidation={() => {
-                    if (strategies[0]) {
-                      runBacktest(strategies[0], selectedSymbol.name, selectedTimeframe.value);
+                    const strategyToValidate = selectedStrategy || allStrategies[0];
+                    if (strategyToValidate) {
+                      runBacktest(strategyToValidate, selectedSymbol.name, selectedTimeframe.value);
                     }
                   }}
                 />
